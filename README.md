@@ -60,9 +60,14 @@ never ship one to a browser, a mobile app, or a public repository.
 
 ## Support
 
-- Integration questions, key requests, webhook configuration: **partners@residencevertical.ro**
-- Include your partner slug and, where relevant, the `externalReference` or report id — it
-  makes tracing an individual request much faster.
+- **Becoming a partner / key requests / webhook configuration** — **partners@residencevertical.ro**.
+  Include your company, which mode you want, rough expected volume, your webhook URL if you
+  have one, and your billing details. You get back a test key, a webhook secret and an
+  environment to point at.
+- **A call failing in an existing integration** — **support@residencevertical.ro**. Include
+  your partner slug and the `externalReference`, report id or `X-RV-Request-Id`; it makes
+  tracing a single request much faster.
+- **Security** — see [SECURITY.md](SECURITY.md).
 
 ## Scope of this repository
 

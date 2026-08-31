@@ -7,7 +7,7 @@ build and test everything **before we issue you an API key**.
 - **Zero dependencies.** Node.js ≥ 20 built-ins only (`node:http`, `node:crypto`, global `fetch`,
   `node:test`). No `npm install`, no build step, no framework.
 - Point it at the real environment with **two environment variables** — no code change.
-- Contract source of truth: the [Partner API integration guide](../../docs/integrations/partner-api.md)
+- Contract source of truth: the [Partner API integration guide](../GUIDE.md)
   and the OpenAPI document served at `GET /api/partner/v1/openapi.yaml`
   (`curl https://gamma.residencevertical.ro/api/partner/v1/openapi.yaml`).
 

@@ -93,7 +93,7 @@ Mint a link (server-side, with your API key — the same key rules as §5):
 
 ```bash
 curl -sS -X POST "https://gamma.residencevertical.ro/api/partner/v1/checkout-links" \
-  -H "Authorization: Bearer $RV_PARTNER_KEY" \
+  -H "Authorization: Bearer $RV_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "address": { "street": "Strada Turda", "streetNumber": "94", "city": "București", "postalCode": "011332" },
@@ -124,7 +124,7 @@ token is the whole link). `checkoutLinkId` is the same token, for your own recor
 | `address.county` / `address.postalCode` | no | Same as §7.1. |
 | `propertyType` | yes | `apartment` or `house`. |
 | `externalReference` | no — but send it | Your lead/order id, ≤ 128 chars. Echoed on the link and, once the buyer converts, on that referral's row in `GET /referrals` (§2.6) — **this is your per-lead conversion tracking**. |
-| `customer.email` | no | RFC-shaped. Pre-fills the buyer's email on our checkout; nothing else happens with it (minting a link sends no email). |
+| `customer.email` | no | RFC-shaped. Stored with the link, used to pre-fill the buyer's email on our checkout, and returned by the link's `resolve` endpoint (§2.1) to the browser that opens the link. Minting a link sends no email. Only include it where you have a lawful basis to share it — see §12.1. |
 | `expiresInHours` | no | Integer, **1..720** (up to 30 days); **default 48**. |
 
 No `coordinates` field — the buy flow geocodes the address exactly as it does for a direct
@@ -149,20 +149,22 @@ How a checkout link behaves:
 - Everything downstream is the standard referral economics: 50 lei paid to us, commission
   earned on `generated` only (§2.3), weekly payout (§2.4).
 
-!!! note "`GET /checkout-links/{token}/resolve` — the page calls this itself"
-    Opening a checkout link, our page resolves the token through a **public** endpoint —
-    no API key involved; the token is the whole credential:
+> **`GET /checkout-links/{token}/resolve` — the page calls this itself**
+>
+> Opening a checkout link, our page resolves the token through a **public** endpoint —
+> no API key involved; the token is the whole credential:
+>
+> ```
+> GET /api/partner/v1/checkout-links/{token}/resolve
+> ```
+>
+> `200` returns what the page pre-fills: `{ partnerSlug, partnerName, address{street,
+> streetNumber, city, county, postalCode}, propertyType, customerEmail, expiresAt }`. An
+> expired link answers `410 checkout_link_expired`; a token that never existed,
+> `404 not_found`. You never need to call it — it is documented because it is part of
+> the contract (and the local mock implements it, §6, so you can watch the whole loop
+> run before you have a key).
 
-    ```
-    GET /api/partner/v1/checkout-links/{token}/resolve
-    ```
-
-    `200` returns what the page pre-fills: `{ partnerSlug, partnerName, address{street,
-    streetNumber, city, county, postalCode}, propertyType, customerEmail, expiresAt }`. An
-    expired link answers `410 checkout_link_expired`; a token that never existed,
-    `404 not_found`. You never need to call it — it is documented because it is part of
-    the contract (and the local mock implements it, §6, so you can watch the whole loop
-    run before you have a key).
 
 ### 2.2 The zero-code link (`/p/<your-slug>`)
 
@@ -331,15 +333,17 @@ two flows are independent and are **not netted** against each other: in a busy w
 may both receive a payout and owe an invoice. The weekly statement email covers both — its
 referral section appears whenever you had referral activity that week.
 
-!!! note "Testing referral mode"
-    On the test environment the checkout pages (`/c/<token>` and the `/p` landing included)
-    sit behind our team access wall (unlike `/api/partner`, which is open — §14 has the
-    details), so an end-to-end referral test on `gamma.residencevertical.ro` is something
-    we run **together** at onboarding. Everything under `/api/partner` works with your test
-    key at any time: minting checkout links, the public resolve, and the tracking endpoints
-    (`GET /me`, `GET /referrals`). The local mock (§6) covers the whole loop — mint,
-    resolve, a stand-in `/c/<token>` landing, and canned referral data — so you can build
-    your integration and reconciliation first.
+> **Testing referral mode**
+>
+> On the test environment the checkout pages (`/c/<token>` and the `/p` landing included)
+> sit behind our team access wall (unlike `/api/partner`, which is open — §14 has the
+> details), so an end-to-end referral test on `gamma.residencevertical.ro` is something
+> we run **together** at onboarding. Everything under `/api/partner` works with your test
+> key at any time: minting checkout links, the public resolve, and the tracking endpoints
+> (`GET /me`, `GET /referrals`). The local mock (§6) covers the whole loop — mint,
+> resolve, a stand-in `/c/<token>` landing, and canned referral data — so you can build
+> your integration and reconciliation first.
+
 
 ## 3. API mode overview — embed reports in your own product
 
@@ -452,7 +456,7 @@ Create a report request:
 
 ```bash
 curl -sS -X POST "https://gamma.residencevertical.ro/api/partner/v1/reports" \
-  -H "Authorization: Bearer $RV_PARTNER_KEY" \
+  -H "Authorization: Bearer $RV_API_KEY" \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: lead-84213" \
   -d '{
@@ -467,7 +471,7 @@ Poll the status:
 
 ```bash
 curl -sS "https://gamma.residencevertical.ro/api/partner/v1/reports/$REPORT_REQUEST_ID" \
-  -H "Authorization: Bearer $RV_PARTNER_KEY"
+  -H "Authorization: Bearer $RV_API_KEY"
 ```
 
 Once `status` is `generated`, the same response carries `viewUrl` — the report web page,
@@ -475,27 +479,27 @@ Once `status` is `generated`, the same response carries `viewUrl` — the report
 
 ```bash
 curl -sS "https://gamma.residencevertical.ro/api/partner/v1/reports/$REPORT_REQUEST_ID" \
-  -H "Authorization: Bearer $RV_PARTNER_KEY" | jq -r '.viewUrl, .viewExpiresAt'
+  -H "Authorization: Bearer $RV_API_KEY" | jq -r '.viewUrl, .viewExpiresAt'
 ```
 
 Optionally, download the PDF yourself (§13):
 
 ```bash
 curl -sS -o raport.pdf "https://gamma.residencevertical.ro/api/partner/v1/reports/$REPORT_REQUEST_ID/pdf" \
-  -H "Authorization: Bearer $RV_PARTNER_KEY"
+  -H "Authorization: Bearer $RV_API_KEY"
 ```
 
 If the link you stored has since expired, mint a fresh one:
 
 ```bash
 curl -sS -X POST "https://gamma.residencevertical.ro/api/partner/v1/reports/$REPORT_REQUEST_ID/view-link" \
-  -H "Authorization: Bearer $RV_PARTNER_KEY"
+  -H "Authorization: Bearer $RV_API_KEY"
 ```
 
 ### Reference integration and mock server — start before you have a key
 
 A complete, runnable Node.js integration lives in the `samples/partner-api-node/` directory of
-[this documentation repository](https://github.com/residencevertical/residencevertical-documentation/tree/main/samples/partner-api-node):
+[this documentation repository](https://github.com/residencevertical/partner-api/tree/main/sample):
 a demo property page, the partner backend behind it, and **a local mock of this API**.
 
 ```bash
@@ -547,7 +551,7 @@ Request body:
   "coordinates": { "lat": 44.4600, "lng": 26.0500 },
   "propertyType": "apartment",
   "residentialComplex": "Ansamblul X",
-  "adUrl": "https://www.imobiliare.ro/…",
+  "adUrl": "https://example-listings.ro/anunt/12345",
   "customer": { "email": "buyer@example.com", "name": "Ion Popescu" },
   "externalReference": "lead-84213",
   "webhookUrl": "https://partner.example/rv-hook"
@@ -564,7 +568,7 @@ Request body:
 | `coordinates.lat` / `coordinates.lng` | no | WGS-84; `lat` in [-90, 90], `lng` in [-180, 180]. If omitted we geocode the address (§12). |
 | `propertyType` | yes | `apartment` or `house`. |
 | `residentialComplex` | no | The **name** of the residential complex / ansamblu (e.g. `Cosmopolis`), never an address. |
-| `adUrl` | no | `http(s)` URL of the property listing (Imobiliare.ro, Storia.ro, …). |
+| `adUrl` | no | `http(s)` URL of the property's public listing, if you have one. |
 | `customer.email` | no | RFC-shaped email. If present, the buyer receives our standard delivery email with the PDF (§12). |
 | `customer.name` | no | Buyer's name. |
 | `externalReference` | no | Your own lead/order id, ≤ 128 chars; echoed in responses and webhooks. |
@@ -894,78 +898,78 @@ Always verify before trusting a webhook. Use the **raw** request body bytes (not
 re-serialised JSON object), compare in constant time, and reject requests whose timestamp is
 more than **300 seconds** away from your clock (replay protection).
 
-=== "Node.js"
+#### Node.js
 
-    ```js
-    const crypto = require("node:crypto");
+```js
+const crypto = require("node:crypto");
 
-    // rawBody: Buffer (e.g. express.raw({ type: "application/json" }))
-    function verifyRvWebhook(rawBody, headers, secret) {
-      const timestamp = headers["x-rv-timestamp"];
-      const signature = headers["x-rv-signature"] || "";
-      if (!timestamp || !/^\d+$/.test(timestamp)) return false;
-      if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) return false;
+// rawBody: Buffer (e.g. express.raw({ type: "application/json" }))
+function verifyRvWebhook(rawBody, headers, secret) {
+  const timestamp = headers["x-rv-timestamp"];
+  const signature = headers["x-rv-signature"] || "";
+  if (!timestamp || !/^\d+$/.test(timestamp)) return false;
+  if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) return false;
 
-      const expected = crypto
-        .createHmac("sha256", secret)
-        .update(`${timestamp}.`)
-        .update(rawBody)
-        .digest("hex");
-      const provided = signature.startsWith("v1=") ? signature.slice(3) : "";
-      const a = Buffer.from(expected, "utf8");
-      const b = Buffer.from(provided, "utf8");
-      return a.length === b.length && crypto.timingSafeEqual(a, b);
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(`${timestamp}.`)
+    .update(rawBody)
+    .digest("hex");
+  const provided = signature.startsWith("v1=") ? signature.slice(3) : "";
+  const a = Buffer.from(expected, "utf8");
+  const b = Buffer.from(provided, "utf8");
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+```
+
+#### Python
+
+```python
+import hashlib
+import hmac
+import time
+
+def verify_rv_webhook(raw_body: bytes, headers: dict, secret: str) -> bool:
+    timestamp = headers.get("X-RV-Timestamp", "")
+    signature = headers.get("X-RV-Signature", "")
+    if not timestamp.isdigit():
+        return False
+    if abs(time.time() - int(timestamp)) > 300:
+        return False
+    expected = hmac.new(
+        secret.encode("utf-8"),
+        timestamp.encode("utf-8") + b"." + raw_body,
+        hashlib.sha256,
+    ).hexdigest()
+    provided = signature[3:] if signature.startswith("v1=") else ""
+    return hmac.compare_digest(expected, provided)
+```
+
+#### PHP
+
+```php
+<?php
+function verifyRvWebhook(string $rawBody, array $headers, string $secret): bool
+{
+    // $headers keys lower-cased, e.g. from getallheaders() + array_change_key_case()
+    $timestamp = $headers['x-rv-timestamp'] ?? '';
+    $signature = $headers['x-rv-signature'] ?? '';
+    if (!ctype_digit($timestamp)) {
+        return false;
     }
-    ```
-
-=== "Python"
-
-    ```python
-    import hashlib
-    import hmac
-    import time
-
-    def verify_rv_webhook(raw_body: bytes, headers: dict, secret: str) -> bool:
-        timestamp = headers.get("X-RV-Timestamp", "")
-        signature = headers.get("X-RV-Signature", "")
-        if not timestamp.isdigit():
-            return False
-        if abs(time.time() - int(timestamp)) > 300:
-            return False
-        expected = hmac.new(
-            secret.encode("utf-8"),
-            timestamp.encode("utf-8") + b"." + raw_body,
-            hashlib.sha256,
-        ).hexdigest()
-        provided = signature[3:] if signature.startswith("v1=") else ""
-        return hmac.compare_digest(expected, provided)
-    ```
-
-=== "PHP"
-
-    ```php
-    <?php
-    function verifyRvWebhook(string $rawBody, array $headers, string $secret): bool
-    {
-        // $headers keys lower-cased, e.g. from getallheaders() + array_change_key_case()
-        $timestamp = $headers['x-rv-timestamp'] ?? '';
-        $signature = $headers['x-rv-signature'] ?? '';
-        if (!ctype_digit($timestamp)) {
-            return false;
-        }
-        if (abs(time() - (int) $timestamp) > 300) {
-            return false;
-        }
-        $expected = hash_hmac('sha256', $timestamp . '.' . $rawBody, $secret);
-        $provided = str_starts_with($signature, 'v1=') ? substr($signature, 3) : '';
-        return hash_equals($expected, $provided);
+    if (abs(time() - (int) $timestamp) > 300) {
+        return false;
     }
+    $expected = hash_hmac('sha256', $timestamp . '.' . $rawBody, $secret);
+    $provided = str_starts_with($signature, 'v1=') ? substr($signature, 3) : '';
+    return hash_equals($expected, $provided);
+}
 
-    // Usage (plain PHP):
-    // $rawBody = file_get_contents('php://input');
-    // $headers = array_change_key_case(getallheaders(), CASE_LOWER);
-    // if (!verifyRvWebhook($rawBody, $headers, $secret)) { http_response_code(400); exit; }
-    ```
+// Usage (plain PHP):
+// $rawBody = file_get_contents('php://input');
+// $headers = array_change_key_case(getallheaders(), CASE_LOWER);
+// if (!verifyRvWebhook($rawBody, $headers, $secret)) { http_response_code(400); exit; }
+```
 
 ### 10.4 Delivery, retries and idempotent handling
 
@@ -1040,8 +1044,8 @@ more than **300 seconds** away from your clock (replay protection).
   and you know the **name** (e.g. `Cosmopolis`, `One Floreasca City`). Never put an address,
   a street or a building number in this field — address-shaped values are ignored, and a
   wrong name can attach the wrong developer to the report.
-- **`adUrl` (optional).** The public listing URL. When present we extract the listing's own
-  data (price, surface, photos) and cross-check it, which noticeably improves the report.
+- **`adUrl` (optional).** A link to the property's public listing. Supplying it lets us
+  cross-check the details you sent against the listing, which noticeably improves the report.
 - **`customer.email` semantics.**
     - If provided, the end buyer **also receives our standard delivery email** with the PDF
       attached (plus our standard "report in progress" notice when generation is slow),
@@ -1051,6 +1055,27 @@ more than **300 seconds** away from your clock (replay protection).
       the PDF (§13) if your flow also needs the file.
 - **`externalReference` (optional).** Your lead/order id, echoed back in every response and
   webhook — the easiest way to correlate our `reportRequestId` with your data.
+
+### 12.1 Personal data
+
+Where you send us an end user's personal data — `customer.email`, `customer.name` — both
+parties act as **independent controllers** for their own processing. By sending it you
+warrant that you have a lawful basis to do so and that you have informed your users that
+their details are shared with ResidenceVertical to generate and deliver the report.
+
+We use it to generate and deliver the report (including the delivery email, when you supply
+an address), to support the purchase, and to meet our accounting obligations. We do not sell
+it or use it to market to your users.
+
+Note the one place it is readable outside the API: a checkout link's `customer.email` is
+returned by the public `resolve` endpoint (§2.1) to whoever opens that link, so that our
+checkout can pre-fill it. Treat a checkout-link URL as something to send only to the buyer
+it was minted for.
+
+A data-sharing agreement covering roles, retention and deletion requests is executed as part
+of partner onboarding, before any live traffic. Our privacy policy:
+<https://residencevertical.ro/privacy>. Questions: **partners@residencevertical.ro**.
+
 
 ## 13. PDF handling
 
@@ -1128,17 +1153,27 @@ link at any time, and older links keep working until their own expiry.
 If you would rather build the page yourself, §7.5 documents the two endpoints it is made
 of.
 
-!!! note "On the test environment"
-    `gamma.residencevertical.ro` sits behind a team access wall, with two carve-outs that
-    matter to you: everything under `/api/partner` (the API you integrate against) and the
-    page route `/raport/…` (so a gamma `viewUrl` opens in a browser like it will in
-    production). Both behave exactly as on production, where there is no wall at all.
+> **On the test environment**
+>
+> `gamma.residencevertical.ro` sits behind a team access wall, with two carve-outs that
+> matter to you: everything under `/api/partner` (the API you integrate against) and the
+> page route `/raport/…` (so a gamma `viewUrl` opens in a browser like it will in
+> production). Both behave exactly as on production, where there is no wall at all.
+>
+> If a test `viewUrl` ever bounces you to a sign-in page instead of showing the report,
+> tell us and we will sort it out.
 
-    If a gamma `viewUrl` ever redirects you to `residencevertical.cloudflareaccess.com`
-    instead of showing the report, the carve-out has not been applied to that environment
-    yet — tell us and we will enable it.
 
 ## 15. Timing guidance
+
+> **Scope of the figures and of the report**
+>
+> Timings in this guide are typical observed figures, not service-level commitments. Any
+> SLA is whatever your agreement with us says.
+>
+> The report is informational. It is not a technical expertise, a valuation, or legal or
+> investment advice, and must not be presented to your users as any of those.
+
 
 - Reports usually complete within **~4 minutes** (`estimatedReadySeconds: 240`). Show the
   user a "your report is being generated" state rather than blocking the request.
