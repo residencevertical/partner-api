@@ -80,6 +80,22 @@ The flow, end to end (either tier):
 5. Every Monday we close the previous week and **pay the week's earned commissions to
    your IBAN** in one SEPA transfer (§2.4). You invoice us for the commission.
 
+> **See referral mode running before you build it**
+>
+> We host a working partner site on the test environment — a fictional property portal
+> called *Portal Imobiliar Demo*, built on this exact API:
+> <https://gamma.residencevertical.ro/partner-demo>
+>
+> Each listing's button calls `POST /checkout-links` from that site's own backend, then
+> hands the buyer to our checkout with the address pre-filled and the attribution attached;
+> its "Conversiile mele" panel reads back live from `GET /referrals` (§2.6). It is the same
+> flow as §2.1 below, and the same flow the bundled sample implements — just running against
+> the real API.
+>
+> The page itself is restricted to our team and to onboarded partners: tell us and we will
+> enable your address. Your test key works against `/api/partner` from the moment you have
+> it, with or without that.
+
 ### 2.1 Checkout links — the recommended tier
 
 One server call mints a **checkout link** for one property; the returned `url` goes behind
