@@ -1,6 +1,6 @@
 /**
  * MOCK ONLY (throw this file away) — outbound signed webhook delivery, mirroring
- * `PartnerWebhookDispatcher` in payment-service.
+ * `the webhook dispatcher` on our side.
  *
  * What it reproduces faithfully (this is what your endpoint has to cope with):
  *   - body      `{event, deliveryId, sentAt, data:<status representation>}`

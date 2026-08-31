@@ -1,6 +1,6 @@
 /**
  * MOCK ONLY (throw this file away) — the signed, time-limited REPORT VIEW TOKEN, mirroring
- * `PartnerReportViewTokenService` in payment-service.
+ * `the view-token service` on our side.
  *
  * You never mint one of these yourself: ResidenceVertical mints them and hands you a finished
  * `viewUrl`. The mock reproduces the real recipe anyway, so the demo can show a token being

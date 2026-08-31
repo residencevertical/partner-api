@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 /**
  * MOCK ONLY (throw this file away) — a faithful port of the server-side validator
- * (`PartnerReportRequestValidator` in payment-service), so the error messages and the
+ * (`the server-side request validator` on our side), so the error messages and the
  * `error.fields` keys you code against locally are the ones the real API sends.
  *
  * Every field error is collected into ONE 400 `validation_error`; `message` is
@@ -67,7 +67,7 @@ function isHttpUrl(value) {
 }
 
 /**
- * Port of `PartnerWebhookUrlValidator`: http(s) only, https required in the live environment,
+ * Port of `the webhook URL validator`: http(s) only, https required in the live environment,
  * a host must be present, no embedded credentials, and loopback / link-local / private /
  * multicast literals are rejected.
  *

@@ -1,7 +1,7 @@
 /**
  * MOCK ONLY (throw this file away) — the in-memory report ledger behind the mock API:
  * lifecycle (`processing` → `generated` / `failed`), the exact wire representation
- * (`PartnerReportRepresentation`), the address-driven test hooks and the webhook arming.
+ * (`the report representation`), the address-driven test hooks and the webhook arming.
  */
 import { randomUUID } from "node:crypto";
 import { createWebhookSender } from "./webhookSender.js";
@@ -165,7 +165,7 @@ export function createReportStore({
     reports.set(row.id, row);
 
     if (failImmediately) {
-      // The `Boom` path: report-service refused the request. The row is marked terminally failed
+      // The `Boom` path: our report engine refused the request. The row is marked terminally failed
       // with `report_service_error`, the Idempotency-Key is RELEASED (so the same key retries as a
       // fresh attempt) and — because a webhook URL is configured — a `report.failed` still fires.
       row.failureReason = "report_service_error";
