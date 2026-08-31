@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="ro">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Portal Imobiliar — anunț demo</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Portal<span>Imobiliar</span></div>
+    <p class="disclaimer">Site demonstrativ — integrare ResidenceVertical Partner API</p>
+    <span id="mode" class="mode">…</span>
+  </header>
+
+  <main>
+    <section class="listing">
+      <div class="photo" aria-label="Fotografie indisponibilă în demo">
+        <svg viewBox="0 0 400 260" role="img" aria-hidden="true">
+          <rect width="400" height="260" fill="#e8edf3"/>
+          <rect x="0" y="176" width="400" height="84" fill="#dfe6ee"/>
+          <path d="M90 176V96l70-46 70 46v80z" fill="#c7d3e0"/>
+          <path d="M160 44 78 98v14l82-54 82 54V98z" fill="#a9bccf"/>
+          <rect x="128" y="126" width="26" height="26" fill="#f4f7fa"/>
+          <rect x="166" y="126" width="26" height="26" fill="#f4f7fa"/>
+          <rect x="144" y="160" width="32" height="16" fill="#8fa6bd"/>
+          <rect x="248" y="120" width="86" height="56" fill="#cfdae6"/>
+          <rect x="262" y="134" width="22" height="22" fill="#f4f7fa"/>
+          <rect x="296" y="134" width="22" height="22" fill="#f4f7fa"/>
+          <circle cx="336" cy="60" r="22" fill="#f0d9a8"/>
+        </svg>
+        <span class="photo-note">fotografie demo</span>
+      </div>
+
+      <div class="details">
+        <p class="kind">Apartament · 3 camere · etaj 4/8</p>
+        <h1 id="title">Strada Turda 94, București</h1>
+        <p class="price">148.500 €<span> · 2.062 €/m²</span></p>
+        <ul class="facts">
+          <li><strong>72 m²</strong> suprafață utilă</li>
+          <li><strong>2021</strong> an construcție</li>
+          <li><strong>Sector 1</strong> zonă</li>
+          <li><strong>Balcon</strong> 6 m²</li>
+        </ul>
+        <p class="lede">
+          Apartament luminos, bloc nou, la 6 minute de metrou. Vânzătorul acceptă vizionări
+          în weekend. Comisionul agenției este inclus în preț.
+        </p>
+
+        <div class="report-box">
+          <h2>Raport ResidenceVertical pentru acest imobil</h2>
+          <p class="report-lede">
+            Verificare independentă a clădirii: dezvoltator, risc seismic, autorizații de
+            construire, prețuri comparabile, transport, școli și semnale publice din zonă.
+          </p>
+
+          <label class="scenario">
+            Scenariu demo (adresa trimisă către API)
+            <select id="scenario">
+              <option value="normal">Strada Turda 94 — flux normal</option>
+              <option value="slow">Strada Slow 1 — generare de 3× mai lentă</option>
+              <option value="fail">Strada Fail 1 — raportul eșuează (report_failed)</option>
+              <option value="boom">Strada Boom 1 — 502 report_service_unavailable, apoi reușește</option>
+              <option value="cap">Strada Cap 1 — 429 daily_cap_exceeded</option>
+              <option value="maintenance">Strada Maintenance 1 — 503 maintenance</option>
+              <option value="geo">Strada Geo 1 — 502 geocoding_failed</option>
+            </select>
+          </label>
+
+          <button id="generate" class="cta">Generează raportul ResidenceVertical</button>
+
+          <!-- The deliverable is the report page: "Vezi raportul" (primary) opens the signed
+               ResidenceVertical page (viewUrl) directly in the user's browser — no API key, no
+               proxy. "Descarcă PDF" (secondary) is the optional export, proxied through this
+               site's own route because the PDF endpoint needs the key. -->
+          <div id="actions" class="actions hidden">
+            <a id="view" class="cta" href="#" target="_blank" rel="noopener">Vezi raportul</a>
+            <a id="download" class="cta secondary" href="#">Descarcă PDF</a>
+          </div>
+          <p id="view-note" class="view-note hidden">
+            <span id="pdf-note"></span>
+            <span id="view-expiry"></span>
+            <button id="reissue" type="button" class="linklike">Link expirat? Re-emite</button>
+          </p>
+
+          <div id="status" class="status hidden">
+            <span class="spinner" aria-hidden="true"></span>
+            <div>
+              <p id="status-text">Trimitem cererea…</p>
+              <p id="status-meta" class="meta"></p>
+            </div>
+          </div>
+        </div>
+
+        <!-- REFERRAL mode, recommended tier: the backend mints a checkout link for this
+             property (one API call, the lead id as externalReference) and the buyer pays
+             ResidenceVertical directly — this site never touches the payment. -->
+        <div class="report-box referral-box">
+          <h2>Sau: trimite cumpărătorul la checkout-ul ResidenceVertical</h2>
+          <p class="report-lede">
+            Modul recomandare (referral): backend-ul acestui site generează un link de comandă
+            pentru adresa de mai sus, cumpărătorul plătește 50 lei direct la ResidenceVertical,
+            iar tu încasezi comisionul pentru fiecare raport generat — urmărit per lead prin
+            referința ta externă.
+          </p>
+          <button id="checkout-link" class="cta secondary">Generează link checkout</button>
+          <p id="checkout-result" class="view-note hidden">
+            <a id="checkout-open" href="#" target="_blank" rel="noopener">Deschide linkul de comandă</a>
+            <span id="checkout-meta"></span>
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="wire">
+      <h2>Jurnal apeluri <span>backend-ul acestui site ↔ ResidenceVertical</span></h2>
+      <p class="wire-lede">
+        Cheia API stă doar pe server. Browserul vorbește exclusiv cu backend-ul acestui site;
+        backend-ul vorbește cu ResidenceVertical și primește webhook-urile semnate.
+      </p>
+      <ol id="wire-log" class="wire-log"><li class="empty">Niciun apel încă.</li></ol>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

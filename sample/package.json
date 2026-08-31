@@ -1,0 +1,20 @@
+{
+  "name": "residencevertical-partner-api-sample",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Runnable reference integration for the ResidenceVertical Partner API, with a local mock of the API. Zero dependencies — Node.js built-ins only.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "mock": "node mock-rv-api.js",
+    "test": "node --test"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/residencevertical/partner-api.git",
+    "directory": "sample"
+  }
+}
