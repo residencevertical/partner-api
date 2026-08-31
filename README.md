@@ -19,6 +19,7 @@ portal, agency or broker network — integrating that report into their own prod
 | **[GUIDE.md](GUIDE.md)** | The integration guide. Both modes, every endpoint, webhooks, commissions, settlement. Start at §1. |
 | **[docs/](docs/)** | The same guide as a PDF, if you would rather read or circulate it that way. |
 | **[sample/](sample/)** | A runnable reference integration **and a local mock of our API**. Zero dependencies. |
+| **[Live demo](#see-it-running)** | A partner site we host, running against the real API. See the flow before you build it. |
 
 ## Two ways to integrate
 
@@ -48,6 +49,26 @@ Then open <http://localhost:4000>. No API key, no network, no `npm install` — 
 built-ins only. `node --test` runs the sample's own suite.
 
 See [sample/README.md](sample/README.md) for the full walkthrough.
+
+## See it running
+
+We host a working partner site — **Portal Imobiliar Demo** — built on this exact API:
+
+**<https://gamma.residencevertical.ro/partner-demo>**
+
+It is a fictional property portal with three listings. Clicking *"Vezi raportul
+ResidenceVertical"* calls `POST /checkout-links` from its own backend with a real API key,
+then sends you to our checkout with the address already filled in and the partner
+attribution attached. Its "Conversiile mele" panel reads back live from
+`GET /referrals`, so you can watch a lead turn into an attributed conversion.
+
+In other words: the same flow as [`sample/`](sample/), running against the real API rather
+than a mock — useful for seeing what your users will experience before you build anything.
+
+> **Access:** the test environment is restricted to the ResidenceVertical team and to
+> partners we have onboarded. Tell us at onboarding and we will enable your address, then
+> this link works in your browser. The API itself (`/api/partner`) is open to your test key
+> from the moment you have one — see [GUIDE.md §4](GUIDE.md).
 
 ## Getting a key
 
