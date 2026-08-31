@@ -29,6 +29,7 @@ If you only need the machine-readable contract, the OpenAPI document is served a
 | Report delivery | Our standard flow: delivery email + the report page | You hand over the report (`viewUrl` and/or the PDF) |
 | What you earn | `commissionPct` × 50 lei per **generated** report | `commissionPct` of the list price, given as a visible negative line on our weekly invoice to you |
 | Money direction | **We pay you** — a weekly SEPA payout to your IBAN (§2.4) | **You pay us** — a weekly invoice, net of your commission (§16) |
+| How you learn of a sale | You **poll** `GET /referrals` (§2.6) — no callback today | **Webhook** `report.generated` (§10), or poll `GET /reports/{id}` |
 | Integration effort | One server call per lead (checkout links) — or ~zero with the static link | API key handling, create/poll or webhooks, `viewUrl`/PDF handling |
 
 Ground rules shared by both modes:
@@ -301,6 +302,25 @@ and everything paid out to date.
 | `paidCentsAllTime` | Total commission already paid out to you, ever. |
 
 ### 2.6 `GET /api/partner/v1/referrals` — your referral ledger
+
+**How you find out that a lead converted: you poll this endpoint.** Referral conversions are
+**not** pushed to you — the webhooks in §10 cover API-mode report requests only, and a
+referral purchase does not create one. There is no `referral.*` event today.
+
+In practice that is a small job, because the money is settled weekly anyway:
+
+- Poll every few minutes (or hourly, or nightly — pick what your funnel needs) and match
+  `externalReference` against the leads you minted links for.
+- `status` tells you where each one is: `pending` (paid, report generating) → `earned`
+  (commission owed to you), or `void` (never earns).
+- Nothing is lost by polling slowly. A conversion sits in the ledger indefinitely, and
+  payment follows the weekly cycle in §2.4 regardless of when you read it.
+
+Use `limit`/`offset` to page, and store the `referralId` values you have already seen so a
+re-poll is cheap.
+
+If a push notification for referral conversions would change how you build, tell us —
+**partners@residencevertical.ro**. It is on our list and partner demand is what schedules it.
 
 Newest first. `limit` ≤ 100 (default 20), `offset` default 0 — the same pagination and
 envelope as `GET /reports` (§7.6). Requires your API key (§5).
@@ -861,6 +881,11 @@ us, replay it with the same key. Design your button so that one click produces a
 request with one key; if the user clicks again, replay the same key.
 
 ## 10. Webhooks
+
+> **API mode only.** Everything in this section applies to reports you create yourself with
+> `POST /reports` (§3). Referral conversions are not delivered by webhook — you read them
+> from `GET /referrals` (§2.6).
+
 
 Webhooks are optional but recommended — they remove the polling loop and tell you the
 moment a report is ready. Configure an account-wide URL with ResidenceVertical (we set it on
