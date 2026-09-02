@@ -60,12 +60,6 @@ h1 { margin: 0 0 6px; font-size: 24px; line-height: 1.25; }
 .report-box h2 { margin: 0 0 6px; font-size: 16px; }
 .report-lede { margin: 0 0 14px; color: var(--muted); font-size: 14px; }
 
-.scenario { display: block; font-size: 12px; color: var(--muted); margin-bottom: 14px; }
-.scenario select {
-  display: block; width: 100%; margin-top: 5px; padding: 8px 10px; font-size: 14px; color: var(--ink);
-  background: #fff; border: 1px solid var(--line); border-radius: 8px;
-}
-
 .cta {
   display: inline-block; padding: 11px 18px; border: 0; border-radius: 8px; cursor: pointer;
   font-size: 15px; font-weight: 650; color: #fff; background: var(--accent); text-decoration: none;
@@ -75,18 +69,12 @@ h1 { margin: 0 0 6px; font-size: 24px; line-height: 1.25; }
 .cta.secondary { background: var(--ok); }
 .cta.secondary:hover { background: #0b6142; }
 
-/* Referral mode's demo box: mint a checkout link, hand the URL to the buyer. */
+/* The link-only tier's box: the /p/<slug> URL, pre-filled for this listing. */
 .referral-box { margin-top: 14px; }
-.referral-box #checkout-open { color: var(--accent); font-weight: 600; overflow-wrap: anywhere; }
+.referral-box code { font-size: 13px; }
+#checkout-open, #referral-link { color: var(--accent); font-weight: 600; overflow-wrap: anywhere; }
 
-/* The two deliverables of a generated report, side by side: the web page and the PDF. */
-.actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
 .view-note { margin: 8px 0 0; font-size: 12px; color: var(--muted); }
-.linklike {
-  padding: 0; margin-left: 6px; border: 0; background: none; cursor: pointer;
-  font-size: 12px; color: var(--accent); text-decoration: underline;
-}
-.linklike:disabled { color: var(--muted); cursor: progress; text-decoration: none; }
 
 .status { display: flex; align-items: flex-start; gap: 10px; margin-top: 14px; font-size: 14px; }
 .status p { margin: 0; }
@@ -121,3 +109,14 @@ h1 { margin: 0 0 6px; font-size: 24px; line-height: 1.25; }
 .wire-log .note { color: var(--muted); }
 .wire-log .code.bad { color: var(--err); font-weight: 700; }
 .wire-log .code.good { color: var(--ok); font-weight: 700; }
+
+/* "Conversiile mele": the referral ledger, one row per attributed purchase. */
+.ledger { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.ledger th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.ledger td { padding: 7px 8px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.ledger td.empty { color: var(--muted); }
+.state { padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; background: #eef3fa; color: var(--accent-dark); }
+.state.earned { background: #e6f4ee; color: var(--ok); }
+.state.void { background: #fbe9e7; color: var(--err); }
+.state.pending { background: #fff4e0; color: var(--warn); }
+.totals { margin-top: 12px; }

@@ -1,5 +1,5 @@
 /**
- * `GET /referrals` + the `/me` `referral` block — referral mode (guide §2). The mock ships a
+ * `GET /referrals` + the `/me` `referral` block (guide §4.2, §4.3). The mock ships a
  * canned referral ledger with one row per state a real ledger can show, and derives the `/me`
  * money totals from the same rows.
  *
@@ -12,7 +12,7 @@
  *   - the /me referral block: the `/p/<slug>` link on the mock's own host, and totals
  *     (pending / earned-unpaid / paid-all-time) that EQUAL the sums over the ledger rows —
  *     the two surfaces can never disagree;
- *   - the `{ items, count, limit, offset }` envelope shared with GET /reports.
+ *   - the `{ items, count, limit, offset }` list envelope.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -42,7 +42,7 @@ test("GET /referrals returns the canned ledger in the documented shape, newest f
     const { response, body } = await getJson(mock, "/api/partner/v1/referrals");
     assert.equal(response.status, 200);
     assert.deepEqual({ count: body.count, limit: body.limit, offset: body.offset },
-      { count: body.items.length, limit: 20, offset: 0 }, "the same list envelope as GET /reports");
+      { count: body.items.length, limit: 20, offset: 0 }, "the shared list envelope");
     assert.ok(body.items.length >= 4, "one row per state a real ledger can show");
 
     for (const referral of body.items) {
@@ -80,7 +80,7 @@ test("GET /referrals returns the canned ledger in the documented shape, newest f
       "at least one commission already paid out (paidAt set, status still earned)");
 
     // Per-lead conversion tracking (v1.4): a purchase attributed by a CHECKOUT LINK carries the
-    // partner's own lead id and the link that carried it; a zero-code /p attribution carries
+    // partner's own lead id and the link that carried it; a link-only /p attribution carries
     // neither — the two tiers are distinguishable per row.
     for (const referral of body.items) {
       assert.equal(referral.externalReference !== null, referral.checkoutLinkId !== null,
@@ -93,7 +93,7 @@ test("GET /referrals returns the canned ledger in the documented shape, newest f
     assert.ok(body.items.some((r) => r.externalReference !== null),
       "at least one referral attributed through a checkout link (the recommended tier)");
     assert.ok(body.items.some((r) => r.externalReference === null),
-      "at least one referral attributed through the zero-code /p link");
+      "at least one referral attributed through the link-only /p tier");
 
     // No buyer PII on the partner surface — the buyer is our customer, not the partner's.
     const serialized = JSON.stringify(body.items);

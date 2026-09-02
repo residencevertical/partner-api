@@ -1,5 +1,5 @@
 /**
- * Server-minted CHECKOUT LINKS — referral mode's recommended tier (guide §2.1).
+ * Server-minted CHECKOUT LINKS — the API-backed tier (guide §4.1).
  *
  * These assert the contract you actually depend on:
  *   - the mint is a normal partner endpoint (Bearer key, 401 without it) and answers 201 with
@@ -15,20 +15,10 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { startMock, startPartner, TEST_KEY } from "./helpers.js";
+import { startMock, startPartner, TEST_KEY, linkBody } from "./helpers.js";
 import { CHECKOUT_TOKEN_PATTERN } from "../mock/checkoutLinks.js";
 
 const HOUR_MS = 3600_000;
-
-const linkBody = (overrides = {}) => ({
-  address: {
-    street: "Strada Turda", streetNumber: "94", city: "București", postalCode: "011332",
-    ...overrides.address,
-  },
-  propertyType: "apartment",
-  externalReference: "lead-84213",
-  ...overrides,
-});
 
 async function mint(mock, body, { key = TEST_KEY } = {}) {
   const response = await fetch(`${mock.baseUrl}/api/partner/v1/checkout-links`, {
@@ -80,7 +70,7 @@ test("minting a checkout link requires the key and answers the documented 201 sh
   }
 });
 
-test("mint validation: the create-report address rules plus the 1..720 expiresInHours bounds", async () => {
+test("mint validation: the address rules plus the 1..720 expiresInHours bounds", async () => {
   const mock = await startMock();
   try {
     const missing = await mint(mock, { propertyType: "apartment" });
@@ -105,7 +95,7 @@ test("mint validation: the create-report address rules plus the 1..720 expiresIn
 
     const badEmail = await mint(mock, linkBody({ customer: { email: "not-an-email" } }));
     assert.equal(badEmail.response.status, 400);
-    assert.ok(badEmail.body.error.fields["customer.email"], "customer.email follows the same rule as create-report");
+    assert.ok(badEmail.body.error.fields["customer.email"], "customer.email must be RFC-shaped");
   } finally {
     await mock.close();
   }
@@ -171,7 +161,7 @@ test("an expired link resolves 410 checkout_link_expired; the /c landing serves 
 
 test("storefront button path: the partner backend mints and the landing opens prefilled", async () => {
   const mock = await startMock();
-  const partner = await startPartner({ baseUrl: mock.baseUrl, apiKey: TEST_KEY, webhookSecret: null });
+  const partner = await startPartner({ baseUrl: mock.baseUrl, apiKey: TEST_KEY });
   try {
     const response = await fetch(`${partner.baseUrl}/api/checkout-links`, {
       method: "POST",
@@ -184,9 +174,9 @@ test("storefront button path: the partner backend mints and the landing opens pr
     assert.equal(response.status, 201);
     const link = await response.json();
     assert.match(link.checkoutLinkId, CHECKOUT_TOKEN_PATTERN);
-    assert.ok(link.url.startsWith(`${mock.server.baseUrl()}/c/`),
+    assert.ok(link.checkoutUrl.startsWith(`${mock.server.baseUrl()}/c/`),
       "the browser gets a ResidenceVertical URL — the partner backend is out of the buyer's path");
-    assert.match(link.externalReference, /^lead-/,
+    assert.match(link.leadId, /^lead-/,
       "the backend keyed the mint by its own lead id — the per-lead tracking handle");
 
     // The minted link round-trips: our checkout landing would prefill exactly what was sent.
@@ -197,7 +187,7 @@ test("storefront button path: the partner backend mints and the landing opens pr
     });
 
     // And the URL the buyer clicks serves the landing with the co-branding chip flow.
-    const page = await fetch(link.url);
+    const page = await fetch(link.checkoutUrl);
     assert.equal(page.status, 200);
     const html = await page.text();
     assert.ok(html.includes("Comandă prin partener"), "the discreet co-branding chip copy");

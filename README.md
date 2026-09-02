@@ -16,28 +16,34 @@ portal, agency or broker network — integrating that report into their own prod
 
 | | |
 |---|---|
-| **[GUIDE.md](GUIDE.md)** | The integration guide. Both modes, every endpoint, webhooks, commissions, settlement. Start at §1. |
-| **[docs/](docs/)** | The same guide as a PDF, if you would rather read or circulate it that way. |
+| **[GUIDE.md](GUIDE.md)** | The integration guide. The referral program, its two integration tiers, every endpoint, the commission and the weekly payout. Start at §1. |
+| **[docs/](docs/)** | The same guide as a PDF, if you would rather read or circulate it that way (rendered from `GUIDE.md` by `docs/build-pdf.py`). |
 | **[sample/](sample/)** | A runnable reference integration **and a local mock of our API**. Zero dependencies. |
 | **[Live demo](#see-it-running)** | A partner site we host, running against the real API. See the flow before you build it. |
 
-## Two ways to integrate
+## One program, two ways to integrate
 
-**Referral mode** — you send your users to our checkout, we handle payment, delivery and
-support, and you earn a commission on every report generated. Works with no backend at all
-(a link), or with a backend (server-minted checkout links, exact attribution, per-lead
-tracking). This is the recommended starting point.
+There is a single partner program: **referral**. You send your users to our checkout, we
+handle payment, delivery and support, and you earn a commission (15% by default) on every
+report that generates — paid to you weekly by SEPA transfer, against your invoice to us.
+ResidenceVertical never charges a partner.
 
-**API mode** — you call the API server-to-server, receive the report, and present it inside
-your own product. You are billed for what you generate.
+You can plug into it at either of two tiers, and both can be used on one account:
 
-Both can run at the same time on one partner account. [GUIDE.md §1](GUIDE.md) compares them.
+**Link-only** — a link to `https://<env>/p/<your-slug>` (optionally pre-filled with the
+property address) placed on your site. No backend at all.
+
+**API-backed** — your backend mints a **checkout link** per lead with one API call (exact
+attribution, your own lead id on every conversion) and polls `GET /referrals` to learn
+which leads converted. The recommended tier whenever you have a backend.
+
+[GUIDE.md §1](GUIDE.md) compares them side by side.
 
 ## Try it before you have a key
 
 The sample ships with a **local mock of the Partner API**, so you can build and test the whole
-integration — checkout links, webhooks with real HMAC signatures, report polling, PDF
-download, view links, the referral ledger — before we issue you anything.
+integration — minting checkout links, the public resolve, a stand-in checkout landing, the
+referral ledger and your payout reconciliation — before we issue you anything.
 
 ```bash
 cd sample
@@ -68,12 +74,12 @@ than a mock — useful for seeing what your users will experience before you bui
 > **Access:** the test environment is restricted to the ResidenceVertical team and to
 > partners we have onboarded. Tell us at onboarding and we will enable your address, then
 > this link works in your browser. The API itself (`/api/partner`) is open to your test key
-> from the moment you have one — see [GUIDE.md §4](GUIDE.md).
+> from the moment you have one — see [GUIDE.md §4.4](GUIDE.md).
 
 ## Getting a key
 
 Partner accounts are provisioned by us, per environment. Contact
-**partners@residencevertical.ro** with your company details and intended integration mode, and
+**partners@residencevertical.ro** with your company details and intended integration tier, and
 we will issue a test key plus a testing environment to point it at.
 
 Keys are `rvp_test_…` (testing) and `rvp_live_…` (production). They are **server-side only** —
@@ -81,12 +87,12 @@ never ship one to a browser, a mobile app, or a public repository.
 
 ## Support
 
-- **Becoming a partner / key requests / webhook configuration** — **partners@residencevertical.ro**.
-  Include your company, which mode you want, rough expected volume, your webhook URL if you
-  have one, and your billing details. You get back a test key, a webhook secret and an
-  environment to point at.
+- **Becoming a partner / key requests / payout details** — **partners@residencevertical.ro**.
+  Include your company, which tier you want, rough expected volume, and your payout details
+  (IBAN, account holder, the company details for your commission invoices). You get back a
+  test key and an environment to point at.
 - **A call failing in an existing integration** — **support@residencevertical.ro**. Include
-  your partner slug and the `externalReference`, report id or `X-RV-Request-Id`; it makes
+  your partner slug and the `externalReference`, `referralId` or `X-RV-Request-Id`; it makes
   tracing a single request much faster.
 - **Security** — see [SECURITY.md](SECURITY.md).
 
@@ -94,8 +100,8 @@ never ship one to a browser, a mobile app, or a public repository.
 
 This repo contains the partner-facing integration guide and a reference sample. It is **not**
 the ResidenceVertical platform source, and the sample is illustrative — production-shaped
-(idempotency, signature verification, retries, error handling) but written to be read and
-adapted, not deployed as-is.
+(per-lead tracking, retries, error handling) but written to be read and adapted, not deployed
+as-is.
 
 The API contract is versioned; breaking changes get a new version and advance notice. See the
 changelog at the end of [GUIDE.md](GUIDE.md).

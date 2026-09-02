@@ -1,43 +1,35 @@
 /* Demo storefront script. The browser talks ONLY to this site's own backend — it never sees the
    ResidenceVertical API key and never calls the Partner API directly. */
 
-const SCENARIOS = {
-  normal: { street: "Strada Turda", streetNumber: "94", city: "București", county: "București", postalCode: "011332" },
-  slow: { street: "Strada Slow", streetNumber: "1", city: "București" },
-  fail: { street: "Strada Fail", streetNumber: "1", city: "București" },
-  boom: { street: "Strada Boom", streetNumber: "1", city: "București" },
-  cap: { street: "Strada Cap", streetNumber: "1", city: "București" },
-  maintenance: { street: "Strada Maintenance", streetNumber: "1", city: "București" },
-  geo: { street: "Strada Geo", streetNumber: "1", city: "București" },
+const PROPERTY = {
+  street: "Strada Turda", streetNumber: "94", city: "București", county: "București",
+  postalCode: "011332", propertyType: "apartment",
 };
 
 const STATUS_TEXT = {
-  pending: "Trimitem cererea către ResidenceVertical…",
-  processing: "Raport în curs de generare — durează de obicei ~4 minute.",
-  generated: "Raportul este gata.",
-  failed: "Generarea raportului a eșuat.",
-  create_failed: "Cererea nu a putut fi înregistrată.",
-};
-
-const FAILURE_TEXT = {
-  report_failed: "Generarea a eșuat definitiv și nu se reia. Nu ți se facturează nimic.",
-  report_cancelled: "Cererea a fost anulată de un operator.",
-  report_service_error: "Serviciul de generare nu a putut fi contactat.",
+  pending: "Cumpărătorul a plătit — raportul se generează. Comisionul devine earned la finalizare.",
+  earned: "Raport generat — comisionul este al tău și intră în următoarea plată de luni.",
+  void: "Această recomandare nu se va plăti (raport eșuat sau plată rambursată).",
 };
 
 const ERROR_TEXT = {
-  daily_cap_exceeded: "Limita zilnică de rapoarte a contului a fost atinsă. Reîncearcă mâine.",
-  maintenance: "Platforma este în mentenanță. Reîncearcă în câteva minute.",
-  partner_api_disabled: "API-ul pentru parteneri este momentan indisponibil.",
-  geocoding_failed: "Adresa nu a putut fi localizată. Verifică adresa sau trimite coordonatele.",
-  report_service_unavailable: "Serviciul de generare nu a acceptat cererea. Reîncearcă în câteva minute.",
   validation_error: "Datele proprietății sunt incomplete sau invalide.",
   unauthorized: "Cheia API nu este validă pentru acest mediu.",
+  partner_suspended: "Contul de partener este suspendat.",
+  partner_api_disabled: "API-ul pentru parteneri este momentan indisponibil.",
+  network_error: "Backend-ul nu a putut contacta ResidenceVertical.",
+  timeout: "ResidenceVertical nu a răspuns la timp.",
 };
 
 const $ = (id) => document.getElementById(id);
-let pollTimer = null;
-let currentOrderId = null;
+const lei = (cents) => `${(cents / 100).toFixed(2).replace(".", ",")} lei`;
+const when = (iso) => (iso ? new Date(iso).toLocaleString("ro-RO") : "—");
+const escapeHtml = (value) => String(value ?? "").replace(/[&<>"]/g, (char) => (
+  { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[char]
+));
+
+let currentLeadId = null;
+let leadTimer = null;
 
 async function loadConfig() {
   try {
@@ -50,102 +42,65 @@ async function loadConfig() {
   }
 }
 
-function renderStatus(order) {
-  const box = $("status");
-  box.classList.remove("hidden", "ok", "err", "warn");
-
-  if (order.status === "generated") box.classList.add("ok");
-  else if (order.status === "failed" || order.status === "create_failed") box.classList.add("err");
-
-  $("status-text").textContent = order.error
-    ? (ERROR_TEXT[order.error.code] ?? STATUS_TEXT.create_failed)
-    : (STATUS_TEXT[order.status] ?? order.status);
-
-  const meta = [];
-  if (order.reportRequestId) meta.push(`reportRequestId: ${order.reportRequestId}`);
-  if (order.failureReason) meta.push(FAILURE_TEXT[order.failureReason] ?? order.failureReason);
-  if (order.error) meta.push(`${order.error.code}${order.error.requestId ? ` · X-RV-Request-Id: ${order.error.requestId}` : ""}`);
-  if (order.notifiedBy) meta.push(order.notifiedBy === "webhook" ? "aflat prin webhook semnat" : "aflat prin polling");
-  $("status-meta").textContent = meta.join(" · ");
-
-  // The deliverable is the interactive web page (viewUrl, opened directly — it needs no key);
-  // the PDF is the secondary export (proxied through this site, because that endpoint does).
-  const ready = order.status === "generated";
-  $("actions").classList.toggle("hidden", !ready);
-  $("view-note").classList.toggle("hidden", !ready);
-  if (order.downloadPath) $("download").href = order.downloadPath;
-  const view = $("view");
-  view.href = order.viewUrl || "#";
-  // No viewUrl on a generated report means view links are switched off on that environment —
-  // the PDF is still there, so degrade instead of breaking.
-  view.classList.toggle("hidden", !order.viewUrl);
-  $("pdf-note").textContent = order.viewUrl ? "PDF-ul este disponibil și pe pagina raportului." : "";
-  $("view-expiry").textContent = order.viewExpiresAt
-    ? `Linkul către raport expiră la ${new Date(order.viewExpiresAt).toLocaleString("ro-RO")}.`
-    : "";
-
-  const done = ["generated", "failed", "create_failed"].includes(order.status);
-  $("generate").disabled = !done;
-  $("generate").textContent = done ? "Generează un raport nou" : "Se generează…";
-  return done;
-}
-
-function poll(orderId) {
-  clearTimeout(pollTimer);
-  pollTimer = setTimeout(async () => {
-    try {
-      const order = await (await fetch(`/api/orders/${orderId}`)).json();
-      if (!renderStatus(order)) poll(orderId);
-    } catch {
-      poll(orderId);
-    }
-  }, 2000); // the browser polls THIS site; this site polls ResidenceVertical at most every 3 s
-}
-
-async function generate() {
-  const scenario = $("scenario").value;
-  const property = { ...SCENARIOS[scenario], propertyType: "apartment", priceEur: 148500, surfaceSqm: 72 };
-  $("title").textContent = `${property.street} ${property.streetNumber}, ${property.city}`;
-  $("generate").disabled = true;
-  $("generate").textContent = "Se generează…";
-  $("actions").classList.add("hidden");
-  $("view-note").classList.add("hidden");
-  renderStatus({ status: "pending" });
-
+/* The link-only tier: the /p/<slug> URL from GET /me, pre-filled for this listing through the
+   documented query parameters (guide §3). Nothing on the server is needed for this one. */
+async function loadAccount() {
   try {
-    const response = await fetch("/api/orders", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(property),
-    });
-    const order = await response.json();
-    currentOrderId = order.orderId;
-    if (!renderStatus(order)) poll(order.orderId);
+    const account = await (await fetch("/api/account")).json();
+    if (account.error) throw new Error(account.error.code);
+    const url = new URL(account.referral.referralUrl);
+    url.searchParams.set("street", PROPERTY.street);
+    url.searchParams.set("number", PROPERTY.streetNumber);
+    url.searchParams.set("city", PROPERTY.city);
+    url.searchParams.set("type", PROPERTY.propertyType);
+    const link = $("referral-link");
+    link.href = url.toString();
+    link.textContent = url.toString();
+    $("referral-meta").textContent = ` · atribuit contului „${account.name}”`;
+    $("commission").textContent = `${account.commissionPct}% din 50 lei`;
   } catch {
-    renderStatus({ status: "create_failed", error: { code: "network" } });
+    $("referral-link").textContent = "linkul de recomandare nu a putut fi citit";
   }
 }
 
-/* The real operational pattern: don't cache a view URL forever — when it lapses, ask for a new
-   one. Older links keep working until their own expiry, so re-minting is always safe. */
-async function reissueViewLink() {
-  if (!currentOrderId) return;
-  const button = $("reissue");
-  button.disabled = true;
-  button.textContent = "Se emite…";
-  try {
-    const response = await fetch(`/api/orders/${currentOrderId}/view-link`, { method: "POST" });
-    if (response.ok) renderStatus(await response.json());
-  } catch { /* the demo backend is restarting — the button stays available */ }
-  button.disabled = false;
-  button.textContent = "Link expirat? Re-emite";
+function renderLead(lead) {
+  const box = $("status");
+  box.classList.remove("hidden", "ok", "err", "warn");
+  if (lead.error) {
+    box.classList.add("err");
+    $("status-text").textContent = ERROR_TEXT[lead.error.code] ?? "Linkul de comandă nu a putut fi generat.";
+    $("status-meta").textContent = `${lead.error.code}${lead.error.requestId ? ` · X-RV-Request-Id: ${lead.error.requestId}` : ""}`;
+    return;
+  }
+  const referral = lead.referral;
+  if (!referral) {
+    box.classList.add("warn");
+    $("status-text").textContent = "Nicio conversie încă pentru acest lead.";
+    $("status-meta").textContent = "Verificăm registrul GET /referrals periodic — nu există webhook, se face polling.";
+    return;
+  }
+  box.classList.add(referral.status === "earned" ? "ok" : referral.status === "void" ? "err" : "warn");
+  $("status-text").textContent = STATUS_TEXT[referral.status] ?? referral.status;
+  $("status-meta").textContent = `referralId ${referral.referralId} · ${lei(referral.commissionCents)}`
+    + `${referral.paidAt ? ` · plătit la ${when(referral.paidAt)}` : ""}`;
 }
 
-/* REFERRAL mode's recommended tier: ONE call to this site's backend mints a server-attributed
-   checkout link for the selected address; the returned URL is safe to hand to the browser (it
-   carries no API key) and stays reusable until it expires. */
+/* Your backend correlates the ledger with your leads; the browser just asks for the lead. */
+function pollLead(leadId) {
+  clearTimeout(leadTimer);
+  leadTimer = setTimeout(async () => {
+    try {
+      const lead = await (await fetch(`/api/leads/${encodeURIComponent(leadId)}`)).json();
+      renderLead(lead);
+    } catch { /* the demo backend is restarting — keep trying */ }
+    pollLead(leadId);
+  }, 5000);
+}
+
+/* The API-backed tier: ONE call to this site's backend mints a server-attributed checkout link
+   for the listing; the returned URL is safe to hand to the browser (it carries no API key) and
+   stays reusable until it expires. */
 async function mintCheckoutLink() {
-  const scenario = SCENARIOS[$("scenario").value];
   const button = $("checkout-link");
   button.disabled = true;
   button.textContent = "Se generează…";
@@ -154,29 +109,60 @@ async function mintCheckoutLink() {
     const response = await fetch("/api/checkout-links", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...scenario, propertyType: "apartment" }),
+      body: JSON.stringify({ ...PROPERTY, ...(currentLeadId ? { leadId: currentLeadId } : {}) }),
     });
-    const body = await response.json();
+    const lead = await response.json();
     if (!response.ok) {
-      $("checkout-meta").textContent = ERROR_TEXT[body?.error?.code] ?? "Linkul de comandă nu a putut fi generat.";
-      $("checkout-open").classList.add("hidden");
-      $("checkout-result").classList.remove("hidden");
+      renderLead({ error: lead.error ?? { code: "network_error" } });
       return;
     }
+    currentLeadId = lead.leadId;
     const open = $("checkout-open");
-    open.href = body.url;
-    open.classList.remove("hidden");
+    open.href = lead.checkoutUrl;
     $("checkout-meta").textContent =
-      `Refolosibil până la ${new Date(body.expiresAt).toLocaleString("ro-RO")} · referință: ${body.externalReference}`;
+      ` · refolosibil până la ${when(lead.checkoutExpiresAt)} · lead: ${lead.leadId}`;
     $("checkout-result").classList.remove("hidden");
+    // In production this is where you redirect the buyer; the demo opens the landing in a tab.
+    window.open(lead.checkoutUrl, "_blank", "noopener");
+    renderLead(lead);
+    pollLead(lead.leadId);
   } catch {
-    $("checkout-meta").textContent = "Backend-ul demo nu a răspuns.";
-    $("checkout-open").classList.add("hidden");
-    $("checkout-result").classList.remove("hidden");
+    renderLead({ error: { code: "network_error" } });
   } finally {
     button.disabled = false;
-    button.textContent = "Generează link checkout";
+    button.textContent = "Vezi raportul ResidenceVertical";
   }
+}
+
+/* "Conversiile mele": the ledger, read through this site's backend (which polls GET /referrals). */
+function renderReferrals(items) {
+  const body = $("referrals");
+  if (!items.length) {
+    body.innerHTML = '<tr><td colspan="5" class="empty">Nicio conversie încă.</td></tr>';
+    $("referral-totals").textContent = "";
+    return;
+  }
+  body.innerHTML = items.map((row) => `<tr>
+    <td>${escapeHtml(when(row.createdAt))}</td>
+    <td>${escapeHtml(row.externalReference ?? "— (link de recomandare)")}</td>
+    <td><span class="state ${escapeHtml(row.status)}">${escapeHtml(row.status)}</span></td>
+    <td>${escapeHtml(lei(row.commissionCents))}</td>
+    <td>${escapeHtml(row.paidAt ? when(row.paidAt) : row.status === "earned" ? "următoarea luni" : "—")}</td>
+  </tr>`).join("");
+  const sum = (rows) => rows.reduce((total, row) => total + row.commissionCents, 0);
+  const earnedUnpaid = items.filter((row) => row.status === "earned" && !row.paidAt);
+  const paid = items.filter((row) => row.paidAt);
+  $("referral-totals").textContent =
+    `De încasat la următoarea plată: ${lei(sum(earnedUnpaid))} · plătit până acum: ${lei(sum(paid))}`
+    + " · pentru suma plătită emiți factură de comision către ResidenceVertical.";
+}
+
+async function refreshReferrals() {
+  try {
+    const { items } = await (await fetch("/api/referrals")).json();
+    if (items) renderReferrals(items);
+  } catch { /* the demo backend is restarting — ignore */ }
+  setTimeout(refreshReferrals, 5000);
 }
 
 function renderWireLog(entries) {
@@ -195,10 +181,6 @@ function renderWireLog(entries) {
   }).join("");
 }
 
-const escapeHtml = (value) => String(value).replace(/[&<>"]/g, (char) => (
-  { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[char]
-));
-
 async function refreshWireLog() {
   try {
     const { entries } = await (await fetch("/api/wire-log")).json();
@@ -207,8 +189,8 @@ async function refreshWireLog() {
   setTimeout(refreshWireLog, 1500);
 }
 
-$("generate").addEventListener("click", generate);
-$("reissue").addEventListener("click", reissueViewLink);
 $("checkout-link").addEventListener("click", mintCheckoutLink);
 loadConfig();
+loadAccount();
+refreshReferrals();
 refreshWireLog();

@@ -1,9 +1,20 @@
+/**
+ * `lib/rvClient.js` against the mock — and against a stubbed `fetch` for the retry policy, so the
+ * suite never sleeps for real.
+ *
+ * These assert the contract you actually depend on:
+ *   - `createCheckoutLink` → the documented 201 shape; a validation failure surfaces
+ *     `error.fields` per field;
+ *   - `listReferrals` pages the ledger; `me()` reports the account and the referral block;
+ *   - a 401 is never retried and carries `X-RV-Request-Id`;
+ *   - the retry policy: network errors and `503 partner_api_disabled` are retried within budget,
+ *     a `Retry-After` beyond the budget fails fast, a 400 is never retried.
+ */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRvClient, RvApiError } from "../lib/rvClient.js";
-import { startMock, waitFor, TEST_KEY, addressBody } from "./helpers.js";
+import { startMock, TEST_KEY, linkBody } from "./helpers.js";
 
-/** The mock is driven by MOCK_REPORT_SECONDS=0 here — never sleep for the real 20 s in a test. */
 async function withMock(options, run) {
   const mock = await startMock(options);
   try {
@@ -20,78 +31,76 @@ const clientFor = (mock, overrides = {}) => createRvClient({
   ...overrides,
 });
 
-test("create → poll → generated → PDF bytes", async () => {
+test("createCheckoutLink mints the documented 201 shape on the mock's own host", async () => {
   await withMock({}, async (mock) => {
     const rv = clientFor(mock);
-
-    const { report, replayed } = await rv.createReport(
-      addressBody({ externalReference: "order-1" }),
-      { idempotencyKey: "order-1" },
-    );
-    assert.equal(replayed, false);
-    assert.equal(report.status, "processing");
-    assert.equal(report.externalReference, "order-1");
-    assert.equal(report.downloadUrl, null);
-    assert.equal(report.estimatedReadySeconds, 240);
-    assert.ok(report.statusUrl.endsWith(`/api/partner/v1/reports/${report.reportRequestId}`));
-    assert.deepEqual(Object.keys(report.address), ["street", "streetNumber", "city", "county", "postalCode"]);
-
-    // Before it is generated the PDF endpoint is a 409, not a 404 and not an empty body.
-    await assert.rejects(
-      () => rv.getReportPdf(report.reportRequestId),
-      (error) => error instanceof RvApiError && error.status === 409 && error.code === "report_not_ready",
-    );
-
-    const generated = await waitFor(async () => {
-      const current = await rv.getReport(report.reportRequestId);
-      return current.status === "generated" ? current : null;
-    }, { label: "status=generated" });
-
-    assert.ok(generated.generatedAt);
-    assert.ok(generated.downloadUrl.endsWith("/pdf"));
-    assert.equal(generated.failureReason, null);
-
-    const pdf = await rv.getReportPdf(report.reportRequestId);
-    assert.equal(pdf.buffer.subarray(0, 5).toString("latin1"), "%PDF-");
-    assert.equal(pdf.contentType, "application/pdf");
-    assert.equal(pdf.filename, `raport-imobiliar-${report.reportRequestId}.pdf`);
-    assert.ok(pdf.buffer.length > 500);
+    const before = Date.now();
+    const link = await rv.createCheckoutLink(linkBody({ externalReference: "lead-1" }));
+    assert.deepEqual(Object.keys(link), ["checkoutLinkId", "url", "expiresAt", "externalReference"]);
+    assert.match(link.checkoutLinkId, /^pcl_[A-Za-z0-9]{32}$/);
+    assert.equal(link.url, `${mock.server.baseUrl()}/c/${link.checkoutLinkId}`);
+    assert.equal(link.externalReference, "lead-1");
+    const lifetimeMs = Date.parse(link.expiresAt) - before;
+    assert.ok(lifetimeMs > 47.9 * 3600_000 && lifetimeMs < 48.1 * 3600_000, "default expiry is 48 h");
   });
 });
 
-test("an idempotent replay returns 200 with the SAME reportRequestId", async () => {
+test("a validation error surfaces error.fields per field and is not retried", async () => {
   await withMock({}, async (mock) => {
-    const rv = clientFor(mock);
-    const first = await rv.createReport(addressBody(), { idempotencyKey: "order-replay" });
-    const second = await rv.createReport(addressBody(), { idempotencyKey: "order-replay" });
-    assert.equal(second.replayed, true);
-    assert.equal(second.report.reportRequestId, first.report.reportRequestId);
+    const exchanges = [];
+    const rv = clientFor(mock, { onExchange: (exchange) => exchanges.push(exchange) });
+    await assert.rejects(
+      () => rv.createCheckoutLink({ address: { street: "Strada Turda" }, propertyType: "villa", expiresInHours: 0 }),
+      (error) => {
+        assert.ok(error instanceof RvApiError);
+        assert.equal(error.status, 400);
+        assert.equal(error.code, "validation_error");
+        assert.equal(error.fields["address.streetNumber"], "address.streetNumber is required");
+        assert.equal(error.fields["address.city"], "address.city is required");
+        assert.equal(error.fields.propertyType, "propertyType must be one of: apartment, house");
+        assert.match(error.fields.expiresInHours, /between 1 and 720/);
+        assert.match(error.message, /^Request validation failed: /);
+        assert.equal(error.retryable, false);
+        return true;
+      },
+    );
+    assert.equal(exchanges.length, 1, "a 400 must not be retried");
   });
 });
 
-test("the same key with a different body is a 409 idempotency_conflict", async () => {
+test("listReferrals pages the ledger newest-first and me() reports the referral block", async () => {
   await withMock({}, async (mock) => {
     const rv = clientFor(mock);
-    await rv.createReport(addressBody(), { idempotencyKey: "order-conflict" });
-    await assert.rejects(
-      () => rv.createReport(addressBody({ address: { street: "Strada Alta", streetNumber: "2", city: "Cluj-Napoca" } }),
-        { idempotencyKey: "order-conflict" }),
-      (error) => error.status === 409 && error.code === "idempotency_conflict",
-    );
+    const page = await rv.listReferrals({ limit: 2 });
+    assert.equal(page.items.length, 2);
+    assert.deepEqual({ count: page.count, limit: page.limit, offset: page.offset }, { count: 2, limit: 2, offset: 0 });
+    assert.ok(Date.parse(page.items[0].createdAt) >= Date.parse(page.items[1].createdAt), "newest first");
+
+    const next = await rv.listReferrals({ limit: 2, offset: 2 });
+    assert.equal(next.offset, 2);
+    assert.notEqual(next.items[0].referralId, page.items[0].referralId, "offset walks the ledger");
+
+    const profile = await rv.me();
+    assert.equal(profile.environment, "test");
+    assert.equal(profile.reportPriceCents, 5000);
+    assert.equal(profile.currency, "RON");
+    assert.equal(profile.commissionPct, 15);
+    assert.equal(profile.referral.referralUrl, `${mock.server.baseUrl()}/p/${profile.slug}`);
+    assert.equal(typeof profile.referral.earnedUnpaidCents, "number");
   });
 });
 
 test("401 unauthorized: an unknown key is not retried and carries X-RV-Request-Id", async () => {
   await withMock({}, async (mock) => {
-    const rv = clientFor(mock, { apiKey: "rvp_live_wrong_environment_key" });
     const attempts = [];
-    const observed = createRvClient({
+    const rv = createRvClient({
       baseUrl: mock.baseUrl,
       apiKey: "rvp_live_wrong_environment_key",
       onExchange: (exchange) => attempts.push(exchange),
     });
-    await assert.rejects(() => rv.me(), (error) => error.status === 401 && error.code === "unauthorized");
-    await assert.rejects(() => observed.me(), (error) => {
+    await assert.rejects(() => rv.me(), (error) => {
+      assert.equal(error.status, 401);
+      assert.equal(error.code, "unauthorized");
       assert.ok(error.requestId, "every response carries X-RV-Request-Id");
       return true;
     });
@@ -99,147 +108,69 @@ test("401 unauthorized: an unknown key is not retried and carries X-RV-Request-I
   });
 });
 
-test("429 daily_cap_exceeded surfaces Retry-After instead of sleeping until midnight", async () => {
-  await withMock({}, async (mock) => {
-    const rv = clientFor(mock);
-    const startedAt = Date.now();
-    await assert.rejects(
-      () => rv.createReport(addressBody({ address: { street: "Strada Cap", streetNumber: "1", city: "București" } }),
-        { idempotencyKey: "order-cap" }),
-      (error) => {
-        assert.equal(error.status, 429);
-        assert.equal(error.code, "daily_cap_exceeded");
-        assert.ok(error.retryAfterSeconds > 0, "Retry-After must be present on a cap 429");
-        assert.equal(error.retryable, true);
-        return true;
-      },
-    );
-    assert.ok(Date.now() - startedAt < 1000, "a Retry-After we cannot honour must fail fast, not block");
-  });
-});
-
-test("503 maintenance is retried within budget and then succeeds", async () => {
-  await withMock({}, async (mock) => {
-    const exchanges = [];
-    const rv = clientFor(mock, { maxAttempts: 2, onExchange: (exchange) => exchanges.push(exchange) });
-    // Retry-After on maintenance is 60 s — above our 200 ms budget, so the client must NOT wait.
-    await assert.rejects(
-      () => rv.createReport(addressBody({ address: { street: "Strada Maintenance", streetNumber: "1", city: "București" } })),
-      (error) => error.status === 503 && error.code === "maintenance" && error.retryAfterSeconds === 60,
-    );
-    assert.equal(exchanges.length, 1);
-  });
-});
-
-test("502 report_service_unavailable: the same Idempotency-Key retries as a FRESH attempt", async () => {
-  await withMock({ boomFailures: 1 }, async (mock) => {
-    // maxAttempts: 1 so the failure surfaces to us instead of being retried internally.
-    const rv = clientFor(mock, { maxAttempts: 1 });
-    const body = addressBody({
-      address: { street: "Strada Boom", streetNumber: "1", city: "București" },
-      externalReference: "order-boom",
+/** A `fetch` stand-in that plays a scripted list of answers, one per attempt. */
+function scriptedFetch(script) {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    const step = script[Math.min(calls.length, script.length) - 1];
+    if (step.throws) {
+      const error = new Error(step.throws);
+      error.name = step.name ?? "TypeError";
+      throw error;
+    }
+    return new Response(step.body === undefined ? "" : JSON.stringify(step.body), {
+      status: step.status,
+      headers: { "content-type": "application/json", "x-rv-request-id": `req-${calls.length}`, ...(step.headers ?? {}) },
     });
+  };
+  return { fetchImpl, calls };
+}
 
-    await assert.rejects(
-      () => rv.createReport(body, { idempotencyKey: "order-boom" }),
-      (error) => error.status === 502 && error.code === "report_service_unavailable",
-    );
+const ok201 = { status: 201, body: { checkoutLinkId: "pcl_x", url: "u", expiresAt: "e", externalReference: null } };
 
-    // The key was NOT consumed: the same key now creates a new request (202), not a 200 replay.
-    const retry = await rv.createReport(body, { idempotencyKey: "order-boom" });
-    assert.equal(retry.replayed, false, "a 502 must not consume the Idempotency-Key");
-    assert.equal(retry.report.status, "processing");
+test("a network error is retried and the mint then succeeds on the next attempt", async () => {
+  const { fetchImpl, calls } = scriptedFetch([{ throws: "ECONNRESET" }, ok201]);
+  const exchanges = [];
+  const rv = createRvClient({
+    baseUrl: "http://rv.invalid", apiKey: TEST_KEY, fetchImpl, maxRetryDelayMs: 20,
+    onExchange: (exchange) => exchanges.push(exchange),
   });
+  const link = await rv.createCheckoutLink(linkBody());
+  assert.equal(link.checkoutLinkId, "pcl_x");
+  assert.equal(calls.length, 2);
+  assert.deepEqual(exchanges.map((exchange) => [exchange.status, exchange.code]), [[0, "network_error"], [201, undefined]]);
+  assert.equal(calls[0].init.headers.Authorization, `Bearer ${TEST_KEY}`, "the key travels only as the Bearer header");
 });
 
-test("502 report_service_unavailable is retried automatically by the client", async () => {
-  await withMock({ boomFailures: 1 }, async (mock) => {
-    const exchanges = [];
-    const rv = clientFor(mock, { maxAttempts: 3, onExchange: (exchange) => exchanges.push(exchange) });
-    const { report } = await rv.createReport(
-      addressBody({ address: { street: "Strada Boom", streetNumber: "1", city: "București" } }),
-      { idempotencyKey: "order-boom-auto" },
-    );
-    assert.equal(report.status, "processing");
-    assert.deepEqual(exchanges.map((exchange) => exchange.status), [502, 202]);
-  });
+test("503 partner_api_disabled is retried within budget; a Retry-After beyond it fails fast", async () => {
+  const disabled = { status: 503, body: { error: { code: "partner_api_disabled", message: "off" } }, headers: { "retry-after": "0" } };
+  const short = scriptedFetch([disabled, ok201]);
+  const rv = createRvClient({ baseUrl: "http://rv.invalid", apiKey: TEST_KEY, fetchImpl: short.fetchImpl, maxRetryDelayMs: 50 });
+  assert.equal((await rv.me()).checkoutLinkId, "pcl_x");
+  assert.equal(short.calls.length, 2, "retried once, then succeeded");
+
+  const long = scriptedFetch([{ ...disabled, headers: { "retry-after": "3600" } }, ok201]);
+  const slow = createRvClient({ baseUrl: "http://rv.invalid", apiKey: TEST_KEY, fetchImpl: long.fetchImpl, maxRetryDelayMs: 50 });
+  const startedAt = Date.now();
+  await assert.rejects(() => slow.me(), (error) => error.status === 503 && error.retryAfterSeconds === 3600 && error.retryable);
+  assert.equal(long.calls.length, 1, "a Retry-After we cannot honour is surfaced, not slept on");
+  assert.ok(Date.now() - startedAt < 500, "…and it must fail fast");
 });
 
-test("502 geocoding_failed is NOT retried (an unchanged address will fail again)", async () => {
-  await withMock({}, async (mock) => {
-    const exchanges = [];
-    const rv = clientFor(mock, { maxAttempts: 3, onExchange: (exchange) => exchanges.push(exchange) });
-    await assert.rejects(
-      () => rv.createReport(addressBody({ address: { street: "Strada Geo", streetNumber: "1", city: "București" } })),
-      (error) => error.status === 502 && error.code === "geocoding_failed" && error.retryable === false,
-    );
-    assert.equal(exchanges.length, 1);
-  });
-});
+test("an edge 429 without a JSON body is retried, and a 5xx without a body is retried too", async () => {
+  const { fetchImpl, calls } = scriptedFetch([
+    { status: 429, body: undefined, headers: { "content-type": "text/plain" } },
+    { status: 502, body: undefined, headers: { "content-type": "text/html" } },
+    ok201,
+  ]);
+  const rv = createRvClient({ baseUrl: "http://rv.invalid", apiKey: TEST_KEY, fetchImpl, maxRetryDelayMs: 20, maxAttempts: 3 });
+  const link = await rv.createCheckoutLink(linkBody());
+  assert.equal(link.checkoutLinkId, "pcl_x");
+  assert.equal(calls.length, 3);
 
-test("a validation error surfaces error.fields per field", async () => {
-  await withMock({}, async (mock) => {
-    const rv = clientFor(mock);
-    await assert.rejects(
-      () => rv.createReport({ address: { street: "Strada Turda" }, propertyType: "villa" }),
-      (error) => {
-        assert.equal(error.status, 400);
-        assert.equal(error.code, "validation_error");
-        assert.equal(error.fields["address.streetNumber"], "address.streetNumber is required");
-        assert.equal(error.fields["address.city"], "address.city is required");
-        assert.equal(error.fields.propertyType, "propertyType must be one of: apartment, house");
-        assert.match(error.message, /^Request validation failed: /);
-        return true;
-      },
-    );
-  });
-});
-
-test("a failed report reports failureReason and never a downloadUrl", async () => {
-  await withMock({}, async (mock) => {
-    const rv = clientFor(mock);
-    const { report } = await rv.createReport(
-      addressBody({ address: { street: "Strada Fail", streetNumber: "1", city: "București" } }),
-    );
-    const failed = await waitFor(async () => {
-      const current = await rv.getReport(report.reportRequestId);
-      return current.status === "failed" ? current : null;
-    }, { label: "status=failed" });
-    assert.equal(failed.failureReason, "report_failed");
-    assert.equal(failed.downloadUrl, null);
-    await assert.rejects(() => rv.getReportPdf(report.reportRequestId),
-      (error) => error.status === 409 && error.code === "report_not_ready");
-  });
-});
-
-test("listReports pages newest-first and filters by status; me() reports the account", async () => {
-  await withMock({}, async (mock) => {
-    const rv = clientFor(mock);
-    await rv.createReport(addressBody({ externalReference: "a" }), { idempotencyKey: "a" });
-    await rv.createReport(addressBody({ externalReference: "b" }), { idempotencyKey: "b" });
-
-    const page = await rv.listReports({ limit: 1 });
-    assert.equal(page.items.length, 1);
-    assert.equal(page.count, 1);
-    assert.equal(page.limit, 1);
-    assert.equal(page.offset, 0);
-    assert.equal(page.items[0].externalReference, "b", "newest first");
-
-    await assert.rejects(() => rv.listReports({ status: "nope" }),
-      (error) => error.status === 400 && error.fields.status === "must be one of: processing, generated, failed");
-
-    const profile = await rv.me();
-    assert.equal(profile.environment, "test");
-    assert.equal(profile.reportPriceCents, 5000);
-    assert.equal(profile.currency, "RON");
-    assert.equal(profile.reportsToday, 2);
-  });
-});
-
-test("an unknown reportRequestId is a 404 not_found", async () => {
-  await withMock({}, async (mock) => {
-    const rv = clientFor(mock);
-    await assert.rejects(() => rv.getReport("00000000-0000-4000-8000-000000000000"),
-      (error) => error.status === 404 && error.code === "not_found");
-  });
+  const exhausted = scriptedFetch([{ status: 502, body: undefined, headers: { "content-type": "text/html" } }]);
+  const rv2 = createRvClient({ baseUrl: "http://rv.invalid", apiKey: TEST_KEY, fetchImpl: exhausted.fetchImpl, maxRetryDelayMs: 20, maxAttempts: 2 });
+  await assert.rejects(() => rv2.me(), (error) => error.status === 502 && error.code === "http_502" && error.requestId === "req-2");
+  assert.equal(exhausted.calls.length, 2, "gives up after maxAttempts");
 });

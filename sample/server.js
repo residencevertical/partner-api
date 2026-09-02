@@ -2,40 +2,35 @@
 /**
  * The PARTNER's backend — this is the part you actually adapt.
  *
- * It shows the whole integration in one small file:
- *   POST /api/orders             your user clicks "Generează raportul" → we create ONE report
- *                                request, using YOUR order id as the `Idempotency-Key` and as
- *                                `externalReference`.
- *   GET  /api/orders/:orderId    your own status endpoint. Your browser polls YOU; YOU poll
- *                                ResidenceVertical (with a small cache, so a page with 5 open
- *                                tabs does not become 5 calls/second upstream).
- *   GET  /api/orders/:orderId/pdf  proxies our bytes to your user — the API key never reaches a
- *                                browser, and `downloadUrl` is never hotlinked.
- *   POST /api/orders/:orderId/view-link  re-mints the signed link to the report WEB PAGE when the
- *                                one you stored has expired. The page itself is opened by your
- *                                user's browser straight from `viewUrl` — no key, no proxy.
- *   POST /api/checkout-links     REFERRAL mode's recommended tier: mints a server-attributed
- *                                checkout link for the property (one API call, your lead id as
- *                                `externalReference`) and hands the `/c/<token>` URL to the
- *                                browser — the buyer pays ResidenceVertical directly and you
- *                                earn commission per generated report.
- *   POST /webhooks/residencevertical  signed delivery: verify → de-duplicate → 2xx immediately.
+ * It shows the whole API-backed referral integration (guide §4) in one small file:
+ *   POST /api/checkout-links     your user clicks "Raport ResidenceVertical" → we mint ONE
+ *                                checkout link for the property, keyed by YOUR lead id as
+ *                                `externalReference`, and hand the `/c/<token>` URL to the
+ *                                browser. The buyer pays ResidenceVertical directly; this
+ *                                backend is out of the payment path entirely.
+ *   GET  /api/leads/:leadId      your own lead view: the link you minted plus, once the buyer
+ *                                has bought, the referral row (pending → earned, or void) —
+ *                                read from the ledger with a small cache.
+ *   GET  /api/referrals          the "Conversiile mele" panel: your referral ledger, polled from
+ *                                ResidenceVertical (this is how you learn a lead converted —
+ *                                there is no webhook, guide §2.3).
+ *   GET  /api/account            the safe subset of GET /me for the storefront: name, commission,
+ *                                the link-only `/p/<slug>` URL and your running totals.
  *
  * Run it against the bundled mock (default) or against gamma — one env switch, no code change:
  *   node server.js
- *   RV_API_BASE_URL=https://gamma.residencevertical.ro RV_API_KEY=rvp_test_… \
- *     RV_WEBHOOK_SECRET=whsec_… node server.js
+ *   RV_API_BASE_URL=https://gamma.residencevertical.ro RV_API_KEY=rvp_test_… node server.js
  */
 import http from "node:http";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { createRvClient, RvApiError } from "./lib/rvClient.js";
-import { verify as verifyWebhookSignature } from "./lib/webhookSignature.js";
-import { createOrderStore } from "./lib/store.js";
+import { createLeadStore } from "./lib/store.js";
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "public");
-const STATUS_CACHE_MS = 3_000;
+const LEDGER_CACHE_MS = 5_000;
+const ACCOUNT_CACHE_MS = 60_000;
 const MIME = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8" };
 
 export class ConfigError extends Error {}
@@ -57,7 +52,7 @@ export function resolveConfig(env = process.env) {
       `RV_API_KEY is required when RV_API_BASE_URL points at a real environment (${baseUrl}).\n`
       + "  ResidenceVertical issues the key; it starts with rvp_test_ (gamma) or rvp_live_ (production).\n"
       + "  Set it and start again:\n"
-      + `      RV_API_BASE_URL=${baseUrl} RV_API_KEY=rvp_test_… RV_WEBHOOK_SECRET=whsec_… node server.js\n`
+      + `      RV_API_BASE_URL=${baseUrl} RV_API_KEY=rvp_test_… node server.js\n`
       + "  Or drop the env vars entirely to run against the bundled mock (node mock-rv-api.js).",
     );
   }
@@ -76,17 +71,15 @@ export function resolveConfig(env = process.env) {
     baseUrl,
     apiKey,
     mockMode,
-    webhookSecret: env.RV_WEBHOOK_SECRET ?? (mockMode ? "whsec_local_mock_secret" : null),
     port: Number(env.PORT ?? 4000),
-    statusCacheMs: Number(env.RV_STATUS_CACHE_MS ?? STATUS_CACHE_MS),
+    ledgerCacheMs: Number(env.RV_LEDGER_CACHE_MS ?? LEDGER_CACHE_MS),
   };
 }
 
 export function createPartnerServer(config) {
-  const statusCacheMs = config.statusCacheMs ?? STATUS_CACHE_MS;
-  const store = createOrderStore();
+  const ledgerCacheMs = config.ledgerCacheMs ?? LEDGER_CACHE_MS;
+  const store = createLeadStore();
   const wireLog = [];
-  const pdfCache = new Map(); // orderId -> {buffer, filename} — "download once, serve many times"
 
   function logWire(entry) {
     wireLog.unshift({ at: new Date().toISOString(), ...entry });
@@ -116,55 +109,80 @@ export function createPartnerServer(config) {
     res.end(body);
   };
 
-  const readRawBody = (req) => new Promise((resolve, reject) => {
+  const readJsonBody = async (req) => {
     const chunks = [];
-    req.on("data", (chunk) => chunks.push(chunk));
-    req.on("end", () => resolve(Buffer.concat(chunks)));
-    req.on("error", reject);
+    for await (const chunk of req) chunks.push(chunk);
+    return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+  };
+
+  /** Surface the machine-readable upstream code to your own UI; never the raw stack trace. */
+  const sendUpstreamError = (res, error, extra = {}) => sendJson(res, error.status === 400 ? 400 : 502, {
+    ...extra,
+    error: { code: error.code, message: error.message, requestId: error.requestId },
   });
 
   /**
-   * Your own view of an order — never leak our internals or the key to the browser.
-   *
-   * Two deliverables reach your user once the report is generated:
-   *   `viewUrl`      the signed ResidenceVertical web page. Safe to hand to a browser as-is: it
-   *                  carries no API key, only a signature bound to this one report. Put it behind
-   *                  your "Vezi raportul" button.
-   *   `downloadPath` YOUR route, which proxies our PDF bytes. The PDF endpoint on our side needs
-   *                  your key, so it is fetched server-side and never hotlinked.
+   * Your own view of a lead — never leak the key to the browser. `checkoutUrl` is safe to hand
+   * over as-is: it carries no API key, only the opaque token that IS the link.
    */
-  const orderView = (order) => ({
-    orderId: order.orderId,
-    property: order.property,
-    status: order.status,
-    failureReason: order.failureReason,
-    reportRequestId: order.reportRequestId,
-    reportId: order.reportId,
-    createdAt: order.createdAt,
-    generatedAt: order.generatedAt,
-    notifiedBy: order.notifiedBy,
-    error: order.error,
-    viewUrl: order.viewUrl,
-    viewExpiresAt: order.viewExpiresAt,
-    downloadPath: order.status === "generated" ? `/api/orders/${order.orderId}/pdf` : null,
+  const leadView = (lead) => ({
+    leadId: lead.leadId,
+    property: lead.property,
+    checkoutLinkId: lead.checkoutLinkId,
+    checkoutUrl: lead.checkoutUrl,
+    checkoutExpiresAt: lead.checkoutExpiresAt,
+    createdAt: lead.createdAt,
+    referral: lead.referral,
+    error: lead.error,
   });
+
+  // ------------------------------------------------------------- the ledger poll
+
+  /**
+   * One cached read of the ledger's first page, correlated with your leads. The real cadence is
+   * yours to choose (minutes, hours, nightly — guide §2.3); the demo keeps it short so the panel
+   * feels live, and the cache keeps five open tabs from becoming five calls a second upstream.
+   */
+  let ledger = { items: [], fetchedAt: 0 };
+  async function refreshLedger() {
+    if (Date.now() - ledger.fetchedAt < ledgerCacheMs) return ledger.items;
+    const page = await rv.listReferrals({ limit: 100 });
+    ledger = { items: page.items, fetchedAt: Date.now() };
+    const matched = store.applyLedger(page.items);
+    if (matched > 0) logWire({ direction: "note", label: "ledger correlated", note: `${matched} referral(s) matched to leads` });
+    return ledger.items;
+  }
+
+  let account = { data: null, fetchedAt: 0 };
+  async function loadAccount() {
+    if (account.data && Date.now() - account.fetchedAt < ACCOUNT_CACHE_MS) return account.data;
+    const profile = await rv.me();
+    // Only what the storefront needs — nothing operational, nothing secret.
+    account = {
+      data: { name: profile.name, slug: profile.slug, commissionPct: profile.commissionPct, referral: profile.referral },
+      fetchedAt: Date.now(),
+    };
+    return account.data;
+  }
 
   // ------------------------------------------------------------- handlers
 
-  async function createOrder(req, res) {
-    const raw = await readRawBody(req);
+  /**
+   * Mint a checkout link server-side and hand the URL to the browser (guide §4.1). ONE lead =
+   * ONE `externalReference` = one link, reused while it is still valid — a re-click never mints
+   * a duplicate, and a lead that comes back after expiry gets a fresh one.
+   */
+  async function createCheckoutLink(req, res) {
     let body;
     try {
-      body = JSON.parse(raw.toString("utf8") || "{}");
+      body = await readJsonBody(req);
     } catch {
       return sendJson(res, 400, { error: "Corpul cererii trebuie să fie JSON valid." });
     }
-
-    // YOUR id. One click = one order id = one Idempotency-Key = one report, forever.
-    const orderId = String(body.orderId || `ord-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`);
-    const existing = store.get(orderId);
-    const order = existing ?? store.create({
-      orderId,
+    // YOUR lead id — stable per lead, reused on a re-click.
+    const leadId = String(body.leadId || `lead-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`);
+    const lead = store.get(leadId) ?? store.create({
+      leadId,
       property: {
         street: body.street,
         streetNumber: body.streetNumber,
@@ -172,185 +190,67 @@ export function createPartnerServer(config) {
         county: body.county || null,
         postalCode: body.postalCode || null,
         propertyType: body.propertyType || "apartment",
-        residentialComplex: body.residentialComplex || null,
-        priceEur: body.priceEur ?? null,
-        surfaceSqm: body.surfaceSqm ?? null,
       },
     });
-
-    try {
-      const { report, replayed } = await rv.createReport({
-        address: {
-          street: order.property.street,
-          streetNumber: order.property.streetNumber,
-          city: order.property.city,
-          county: order.property.county,
-          postalCode: order.property.postalCode,
-        },
-        propertyType: order.property.propertyType,
-        residentialComplex: order.property.residentialComplex,
-        // Send `customer.email` ONLY when you want ResidenceVertical to email the buyer the PDF
-        // as well. Omitted here: this demo delivers the PDF itself.
-        externalReference: order.orderId,
-      }, { idempotencyKey: order.orderId });
-
-      store.applyReportStatus(order, report, { source: "polling" });
-      logWire({ direction: "note", label: replayed ? "idempotent replay (200)" : "report request created (202)", note: report.reportRequestId });
-      return sendJson(res, 201, orderView(order));
-    } catch (error) {
-      if (!(error instanceof RvApiError)) throw error;
-      store.markCreateFailed(order, error);
-      // Surface the machine-readable code to your own UI; never the raw upstream message.
-      return sendJson(res, 502, { ...orderView(order), error: { code: error.code, message: error.message, requestId: error.requestId } });
+    if (store.hasLiveCheckoutLink(lead)) {
+      logWire({ direction: "note", label: "checkout link reused", note: `${lead.checkoutLinkId} still valid` });
+      return sendJson(res, 200, leadView(lead));
     }
-  }
 
-  async function getOrder(res, orderId) {
-    const order = store.get(orderId);
-    if (!order) return sendJson(res, 404, { error: "Comandă inexistentă." });
-
-    const terminal = order.status === "generated" || order.status === "failed";
-    const fresh = Date.now() - order.lastPolledAt < statusCacheMs;
-    if (order.reportRequestId && !terminal && !fresh) {
-      try {
-        store.applyReportStatus(order, await rv.getReport(order.reportRequestId), { source: "polling" });
-      } catch (error) {
-        // A failed status refresh must never break your own page: serve the last known state.
-        if (!(error instanceof RvApiError)) throw error;
-        order.lastPolledAt = Date.now();
-      }
-    }
-    return sendJson(res, 200, orderView(order));
-  }
-
-  /**
-   * "The link expired — give me a new one."
-   *
-   * A view link lives 30 days by default, and your order row outlives it. Rather than caching a
-   * URL forever (or hiding the button once it lapses), re-mint on demand: this is one call, it
-   * costs nothing, and older links keep working until their own expiry.
-   */
-  async function reissueViewLink(res, orderId) {
-    const order = store.get(orderId);
-    if (!order) return sendJson(res, 404, { error: "Comandă inexistentă." });
-    if (order.status !== "generated" || !order.reportRequestId) {
-      return sendJson(res, 409, { error: "Raportul nu este încă disponibil.", status: order.status });
-    }
-    try {
-      const link = await rv.createViewLink(order.reportRequestId);
-      order.viewUrl = link.viewUrl;
-      order.viewExpiresAt = link.viewExpiresAt;
-      logWire({ direction: "note", label: "view link re-emis", note: `expiră ${link.viewExpiresAt}` });
-      return sendJson(res, 200, orderView(order));
-    } catch (error) {
-      if (!(error instanceof RvApiError)) throw error;
-      return sendJson(res, 502, { error: "Nu am putut emite un link nou.", code: error.code, requestId: error.requestId });
-    }
-  }
-
-  async function getOrderPdf(res, orderId) {
-    const order = store.get(orderId);
-    if (!order) return sendJson(res, 404, { error: "Comandă inexistentă." });
-    if (order.status !== "generated") {
-      return sendJson(res, 409, { error: "Raportul nu este încă disponibil.", status: order.status });
-    }
-    try {
-      if (!pdfCache.has(orderId)) {
-        // Download once, cache, serve every later view from your own storage.
-        pdfCache.set(orderId, await rv.getReportPdf(order.reportRequestId));
-      }
-      const pdf = pdfCache.get(orderId);
-      res.writeHead(200, {
-        "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="${pdf.filename}"`,
-        "Content-Length": pdf.buffer.length,
-      });
-      return res.end(pdf.buffer);
-    } catch (error) {
-      if (!(error instanceof RvApiError)) throw error;
-      return sendJson(res, 502, { error: "Descărcarea raportului a eșuat.", code: error.code, requestId: error.requestId });
-    }
-  }
-
-  /**
-   * REFERRAL mode, recommended tier (guide §2.1): mint a checkout link server-side and hand the
-   * URL to the browser. The buyer opens it and pays ResidenceVertical directly — this backend is
-   * out of the payment path entirely; its only job is the ONE mint call, keyed by YOUR lead id
-   * (`externalReference`), which later identifies the conversion on `GET /referrals`.
-   */
-  async function createCheckoutLink(req, res) {
-    const raw = await readRawBody(req);
-    let body;
-    try {
-      body = JSON.parse(raw.toString("utf8") || "{}");
-    } catch {
-      return sendJson(res, 400, { error: "Corpul cererii trebuie să fie JSON valid." });
-    }
-    // YOUR lead id — one per lead, reused on a re-click, exactly like the order id above.
-    const leadId = String(body.leadId || `lead-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`);
     try {
       const link = await rv.createCheckoutLink({
         address: {
-          street: body.street,
-          streetNumber: body.streetNumber,
-          city: body.city,
-          county: body.county || null,
-          postalCode: body.postalCode || null,
+          street: lead.property.street,
+          streetNumber: lead.property.streetNumber,
+          city: lead.property.city,
+          county: lead.property.county,
+          postalCode: lead.property.postalCode,
         },
-        propertyType: body.propertyType || "apartment",
-        externalReference: leadId,
+        propertyType: lead.property.propertyType,
+        externalReference: lead.leadId,
+        // Pre-fills the buyer's email on our checkout. Send it only where you have a lawful
+        // basis to share it (guide §10.1) — the demo form never collects one.
         ...(body.customerEmail ? { customer: { email: body.customerEmail } } : {}),
       });
+      store.attachCheckoutLink(lead, link);
       logWire({ direction: "note", label: "checkout link minted (201)", note: `${link.checkoutLinkId} · expiră ${link.expiresAt}` });
-      // The URL is safe for the browser: it carries no API key — the token IS the link.
-      return sendJson(res, 201, {
-        checkoutLinkId: link.checkoutLinkId,
-        url: link.url,
-        expiresAt: link.expiresAt,
-        externalReference: link.externalReference,
-      });
+      return sendJson(res, 201, leadView(lead));
     } catch (error) {
       if (!(error instanceof RvApiError)) throw error;
-      return sendJson(res, 502, { error: { code: error.code, message: error.message, requestId: error.requestId } });
+      store.markMintFailed(lead, error);
+      return sendUpstreamError(res, error, leadView(lead));
     }
   }
 
-  /** The webhook endpoint. Verify the RAW bytes, de-duplicate, answer 2xx fast. */
-  async function receiveWebhook(req, res) {
-    const rawBody = await readRawBody(req);
-    if (!config.webhookSecret || !verifyWebhookSignature(rawBody, req.headers, config.webhookSecret)) {
-      logWire({ direction: "in", label: "POST /webhooks/residencevertical", status: 401, note: "signature invalid — rejected" });
-      return sendJson(res, 401, { error: "invalid signature" });
-    }
-
-    let event;
+  async function getLead(res, leadId) {
+    const lead = store.get(leadId);
+    if (!lead) return sendJson(res, 404, { error: "Lead inexistent." });
     try {
-      event = JSON.parse(rawBody.toString("utf8"));
-    } catch {
-      return sendJson(res, 400, { error: "invalid json" });
+      await refreshLedger();
+    } catch (error) {
+      // A failed ledger read must never break your own page: serve the last known state.
+      if (!(error instanceof RvApiError)) throw error;
     }
+    return sendJson(res, 200, leadView(lead));
+  }
 
-    const deliveryId = req.headers["x-rv-delivery-id"] ?? event.deliveryId;
-    if (store.isDuplicateDelivery(deliveryId)) {
-      logWire({ direction: "in", label: `webhook ${event.event}`, status: 200, note: `duplicate deliveryId ignored (${deliveryId})` });
-      return sendJson(res, 200, { received: true, duplicate: true });
+  async function listReferrals(res) {
+    try {
+      const items = await refreshLedger();
+      return sendJson(res, 200, { items });
+    } catch (error) {
+      if (!(error instanceof RvApiError)) throw error;
+      return sendUpstreamError(res, error);
     }
+  }
 
-    // `data` is exactly the GET /reports/{id} representation — no follow-up call needed.
-    const order = store.getByReportRequestId(event.data?.reportRequestId)
-      ?? store.get(event.data?.externalReference); // correlate by YOUR id when we have not stored theirs yet
-    if (order) {
-      store.applyReportStatus(order, event.data, { source: "webhook" });
-      order.lastDeliveryId = deliveryId;
+  async function getAccount(res) {
+    try {
+      return sendJson(res, 200, await loadAccount());
+    } catch (error) {
+      if (!(error instanceof RvApiError)) throw error;
+      return sendUpstreamError(res, error);
     }
-    logWire({
-      direction: "in",
-      label: `webhook ${event.event}`,
-      status: 200,
-      note: `${order ? `order ${order.orderId}` : "unknown order"} · deliveryId ${deliveryId}`,
-    });
-    // Answer immediately; anything slow (PDF download, email) belongs in a background job.
-    return sendJson(res, 200, { received: true });
   }
 
   async function serveStatic(res, pathname) {
@@ -371,24 +271,18 @@ export function createPartnerServer(config) {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
     const { pathname } = url;
-    const orderMatch = /^\/api\/orders\/([^/]+)(\/pdf|\/view-link)?$/.exec(pathname);
+    const leadMatch = /^\/api\/leads\/([^/]+)$/.exec(pathname);
 
     const route = async () => {
-      if (req.method === "POST" && pathname === "/api/orders") return createOrder(req, res);
       if (req.method === "POST" && pathname === "/api/checkout-links") return createCheckoutLink(req, res);
-      if (req.method === "POST" && orderMatch && orderMatch[2] === "/view-link") {
-        return reissueViewLink(res, orderMatch[1]);
-      }
-      if (req.method === "GET" && orderMatch && orderMatch[2] !== "/view-link") {
-        return orderMatch[2] ? getOrderPdf(res, orderMatch[1]) : getOrder(res, orderMatch[1]);
-      }
-      if (req.method === "POST" && pathname === "/webhooks/residencevertical") return receiveWebhook(req, res);
+      if (req.method === "GET" && leadMatch) return getLead(res, decodeURIComponent(leadMatch[1]));
+      if (req.method === "GET" && pathname === "/api/referrals") return listReferrals(res);
+      if (req.method === "GET" && pathname === "/api/account") return getAccount(res);
       if (req.method === "GET" && pathname === "/api/wire-log") return sendJson(res, 200, { entries: wireLog });
       if (req.method === "GET" && pathname === "/api/config") {
         return sendJson(res, 200, {
           mode: config.mockMode ? "mock" : "remote",
           apiBaseUrl: config.baseUrl, // the key itself is never exposed
-          webhookVerification: Boolean(config.webhookSecret),
         });
       }
       if (req.method === "GET") return serveStatic(res, pathname);
@@ -426,8 +320,7 @@ if (isMain) {
   Mode             ${config.mockMode ? "MOCK — talking to the bundled mock-rv-api.js" : "REMOTE — talking to a real ResidenceVertical environment"}
   Partner API      ${config.baseUrl}/api/partner/v1
   API key          ${config.apiKey.slice(0, 13)}…  (server-side only, never sent to the browser)
-  Webhook endpoint POST http://localhost:${config.port}/webhooks/residencevertical`
-      + `${config.webhookSecret ? " (signature verification ON)" : " (NO RV_WEBHOOK_SECRET — deliveries will be rejected; polling still works)"}
+  Ledger poll      GET /referrals, cached ${config.ledgerCacheMs} ms (RV_LEDGER_CACHE_MS)
 `);
   });
 }
