@@ -1,5 +1,5 @@
 /**
- * MOCK ONLY (throw this file away) — server-minted CHECKOUT LINKS (guide §2.1), referral mode's
+ * MOCK ONLY (throw this file away) — server-minted CHECKOUT LINKS (guide §4.1), the referral program's
  * recommended tier.
  *
  * The real flow: the partner's backend calls `POST /api/partner/v1/checkout-links` with a

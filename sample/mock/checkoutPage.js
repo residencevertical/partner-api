@@ -1,6 +1,6 @@
 /**
  * MOCK ONLY (throw this file away) — a STAND-IN for the ResidenceVertical CHECKOUT LANDING a
- * checkout link opens (`/c/<token>`, guide §2.1).
+ * checkout link opens (`/c/<token>`, guide §4.1).
  *
  * On a real environment the buyer's browser opens `https://<env>.residencevertical.ro/c/<token>`
  * and the page resolves the token, stores the partner attribution and continues into the normal
